@@ -1,3 +1,7 @@
+<div align="center">
+<!-- 项目图标，默认调用仓库内app.ico，后续可替换GUI截图png -->
+<img src="https://github.com/locyne/WinClearFocus/blob/dev/WinClearFocus/WinClearFocus.ico" width="128"/>
+</div>
 <h1 align="center">WinClearFocus</h1>
 
 <p align="center">一个轻量级的 Windows 窗口辅助工具：调透明度、居中、置底、抖动——全部一个热键搞定。</p>
