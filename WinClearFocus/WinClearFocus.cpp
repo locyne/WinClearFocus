@@ -2,6 +2,9 @@
 #include <shellapi.h>
 #include <shlobj.h>       // IsUserAnAdmin：判断当前进程是否以管理员运行
 #include <commctrl.h>
+#include <windowsx.h>     // GET_X_LPARAM 等
+#include <gdiplus.h>      // 设置界面自绘（现代风格）
+#include <dwmapi.h>       // 窗口圆角 / DWM 属性
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +13,8 @@
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "gdiplus.lib")
+#pragma comment(lib, "dwmapi.lib")
 
 // 常量定义
 #define WM_TRAYICON (WM_USER + 1)
@@ -191,8 +196,9 @@ void RestartAsAdmin()
 // 主函数
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
-    // 初始化通用控件
-    InitCommonControls();
+    // 初始化通用控件（Win11 视觉样式由 exe 内嵌的 comctl32 v6 manifest 启用）
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES };
+    InitCommonControlsEx(&icc);
 
     // 命令行 -silent 优先级最高：命中后无论配置如何都不弹任何启动提示
     bool forceSilent = HasSilentSwitch();
@@ -204,6 +210,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 0;
     }
 
+    // 初始化 GDI+（设置界面自绘用），退出前释放
+    Gdiplus::GdiplusStartupInput gdiplusInput;
+    ULONG_PTR gdiplusToken = 0;
+    if (Gdiplus::GdiplusStartup(&gdiplusToken, &gdiplusInput, NULL) != Gdiplus::Ok) {
+        gdiplusToken = 0;
+    }
 
     // 注册窗口类
     WNDCLASS wc = { 0 };
@@ -260,6 +272,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // 清理资源
     UnregisterHotKeys(g_hMainWnd);
     RemoveTrayIcon();
+
+    if (gdiplusToken) {
+        Gdiplus::GdiplusShutdown(gdiplusToken);
+    }
 
     return (int)msg.wParam;
 }
@@ -553,6 +569,142 @@ static void UpdateAutoStartEnabledState(HWND check, HWND combo)
     EnableWindow(combo, on && IsUserAnAdmin() != FALSE);
 }
 
+// ==================== 设置界面外观（GDI+ / DWM） ====================
+
+static const int kTitleBarHeight = 36;
+static const int kSettingsWidth  = 460;
+static const int kSettingsHeight = 710;          // 内容 + 自绘标题栏 + 加大后的块间距
+static const COLORREF kSettingsBg = RGB(243, 243, 243);
+
+static bool g_hoverClose = false;
+static bool g_hoverSave = false;
+static bool g_hoverCancel = false;
+
+static HBRUSH SettingsBgBrush()
+{
+    static HBRUSH brush = CreateSolidBrush(kSettingsBg);
+    return brush;
+}
+
+static RECT CloseButtonRect(int clientWidth)
+{
+    RECT r = { clientWidth - 40, 6, clientWidth - 8, 38 };
+    return r;
+}
+
+static RECT SaveButtonRect(int clientWidth, int clientHeight)
+{
+    RECT r = { clientWidth - 16 - 108, clientHeight - 16 - 36, clientWidth - 16, clientHeight - 16 };
+    return r;
+}
+
+static RECT CancelButtonRect(int clientWidth, int clientHeight)
+{
+    RECT r = SaveButtonRect(clientWidth, clientHeight);
+    r.right = r.left - 12;
+    r.left = r.right - 88;
+    return r;
+}
+
+static bool HitRect(const RECT& r, int x, int y)
+{
+    return x >= r.left && x < r.right && y >= r.top && y < r.bottom;
+}
+
+static void FillRoundedRect(Gdiplus::Graphics& g, const RECT& r, int radius, const Gdiplus::Color& color)
+{
+    Gdiplus::GraphicsPath path;
+    const int d = radius * 2;
+    path.AddArc(r.left, r.top, d, d, 180.0f, 90.0f);
+    path.AddArc(r.right - d, r.top, d, d, 270.0f, 90.0f);
+    path.AddArc(r.right - d, r.bottom - d, d, d, 0.0f, 90.0f);
+    path.AddArc(r.left, r.bottom - d, d, d, 90.0f, 90.0f);
+    path.CloseFigure();
+    Gdiplus::SolidBrush brush(color);
+    g.FillPath(&brush, &path);
+}
+
+static void DrawCenteredText(Gdiplus::Graphics& g, const wchar_t* text, const RECT& r,
+                             Gdiplus::Font& font, const Gdiplus::Color& color)
+{
+    Gdiplus::StringFormat fmt;
+    fmt.SetAlignment(Gdiplus::StringAlignmentCenter);
+    fmt.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+    Gdiplus::SolidBrush brush(color);
+    Gdiplus::RectF box((Gdiplus::REAL)r.left, (Gdiplus::REAL)r.top,
+                       (Gdiplus::REAL)(r.right - r.left), (Gdiplus::REAL)(r.bottom - r.top));
+    g.DrawString(text, -1, &font, box, &fmt, &brush);
+}
+
+// 自绘整个设置窗口（双缓冲，避免闪烁）
+static void PaintSettingsWindow(HWND hwnd)
+{
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+
+    RECT rc;
+    GetClientRect(hwnd, &rc);
+    const int w = rc.right;
+    const int h = rc.bottom;
+    if (w <= 0 || h <= 0) {
+        EndPaint(hwnd, &ps);
+        return;
+    }
+
+    HDC memDC = CreateCompatibleDC(hdc);
+    HBITMAP memBmp = CreateCompatibleBitmap(hdc, w, h);
+    HGDIOBJ oldBmp = SelectObject(memDC, memBmp);
+
+    {
+        Gdiplus::Graphics g(memDC);
+        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        g.SetTextRenderingHint(Gdiplus::TextRenderingHintClearTypeGridFit);
+
+        // 背景
+        Gdiplus::SolidBrush bg(Gdiplus::Color(243, 243, 243));
+        g.FillRectangle(&bg, 0, 0, w, h);
+
+        // 标题
+        Gdiplus::Font titleFont(L"Microsoft YaHei UI", 17.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        Gdiplus::SolidBrush titleBrush(Gdiplus::Color(32, 32, 32));
+        g.DrawString(L"WinClearFocus 设置", -1, &titleFont, Gdiplus::PointF(16.0f, 8.0f), &titleBrush);
+
+        // 关闭按钮：圆形，悬停变红
+        const RECT cb = CloseButtonRect(w);
+        const int cx = (cb.left + cb.right) / 2;
+        const int cy = (cb.top + cb.bottom) / 2;
+        const int cr = 13;
+        if (g_hoverClose) {
+            Gdiplus::SolidBrush red(Gdiplus::Color(196, 43, 28));
+            g.FillEllipse(&red, cx - cr, cy - cr, cr * 2, cr * 2);
+        }
+        Gdiplus::Pen cross(g_hoverClose ? Gdiplus::Color(255, 255, 255) : Gdiplus::Color(80, 80, 80), 1.6f);
+        g.DrawLine(&cross, (Gdiplus::REAL)(cx - 4), (Gdiplus::REAL)(cy - 4), (Gdiplus::REAL)(cx + 4), (Gdiplus::REAL)(cy + 4));
+        g.DrawLine(&cross, (Gdiplus::REAL)(cx - 4), (Gdiplus::REAL)(cy + 4), (Gdiplus::REAL)(cx + 4), (Gdiplus::REAL)(cy - 4));
+
+        // 底部分隔线
+        Gdiplus::Pen sep(Gdiplus::Color(226, 226, 226), 1.0f);
+        g.DrawLine(&sep, 0.0f, (Gdiplus::REAL)(h - 58), (Gdiplus::REAL)w, (Gdiplus::REAL)(h - 58));
+
+        // 底部按钮（圆角，替代原生按钮）
+        Gdiplus::Font btnFont(L"Microsoft YaHei UI", 15.0f, Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
+        const RECT sb = SaveButtonRect(w, h);
+        FillRoundedRect(g, sb, 6, g_hoverSave ? Gdiplus::Color(0, 90, 168) : Gdiplus::Color(0, 103, 192));
+        DrawCenteredText(g, L"保存设置", sb, btnFont, Gdiplus::Color(255, 255, 255));
+
+        const RECT xb = CancelButtonRect(w, h);
+        FillRoundedRect(g, xb, 6, g_hoverCancel ? Gdiplus::Color(214, 214, 214) : Gdiplus::Color(229, 229, 229));
+        DrawCenteredText(g, L"关闭", xb, btnFont, Gdiplus::Color(32, 32, 32));
+    }
+
+    BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);
+
+    SelectObject(memDC, oldBmp);
+    DeleteObject(memBmp);
+    DeleteDC(memDC);
+    EndPaint(hwnd, &ps);
+}
+
 // 给设置窗口的所有子控件统一应用字体的回调
 static BOOL CALLBACK SetChildFontProc(HWND child, LPARAM lParam)
 {
@@ -563,7 +715,7 @@ static BOOL CALLBACK SetChildFontProc(HWND child, LPARAM lParam)
 // 设置窗口过程
 LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
-    static HWND hTransparencySlider, hSaveButton, hTransparencyLabel;
+    static HWND hTransparencySlider, hTransparencyLabel;
     static HWND hTransparencyUpDisplay, hTransparencyDownDisplay, hCenterDisplay, hShakeDisplay;
     static HWND hTransparencyUpButton, hTransparencyDownButton, hCenterButton, hShakeButton;
     static HWND hTransparencyEnable, hCenterEnable, hShakeEnable;
@@ -574,21 +726,120 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     static HWND hPermissionTip = NULL;       // “权限说明”的 Tooltip 窗口
     static HICON hPermissionIcon = NULL;     // 问号图标（自建副本，需要自己销毁）
     static bool permissionIconOwned = false;
+    static bool trackingMouse = false;
 
     switch (uMsg) {
+    case WM_NCCALCSIZE:
+        if (wParam == TRUE) {
+            return 0;   // 客户区覆盖整个窗口：去掉系统标题栏和外框
+        }
+        break;
+
+    case WM_NCHITTEST:
+    {
+        // 固定尺寸窗口：不再有缩放热区，只保留“标题栏可拖动 + 其余为普通客户区”
+        POINT client = { GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ScreenToClient(hwnd, &client);
+        RECT rcClient;
+        GetClientRect(hwnd, &rcClient);
+        if (client.y < kTitleBarHeight && !HitRect(CloseButtonRect(rcClient.right), client.x, client.y)) {
+            return HTCAPTION;
+        }
+        return HTCLIENT;
+    }
+
+    case WM_NCLBUTTONDBLCLK:
+        return 0;   // 双击标题栏不最大化
+
+    case WM_GETMINMAXINFO:
+    {
+        // 上限和下限都等于当前尺寸：窗口在任何情况下都无法被拉伸/最大化
+        MINMAXINFO* mmi = (MINMAXINFO*)lParam;
+        mmi->ptMinTrackSize.x = kSettingsWidth;
+        mmi->ptMinTrackSize.y = kSettingsHeight;
+        mmi->ptMaxTrackSize.x = kSettingsWidth;
+        mmi->ptMaxTrackSize.y = kSettingsHeight;
+        return 0;
+    }
+
+    case WM_ERASEBKGND:
+        return 1;   // 背景在 WM_PAINT 里一次性画完，避免闪烁
+
+    case WM_PAINT:
+        PaintSettingsWindow(hwnd);
+        return 0;
+
+    case WM_MOUSEMOVE:
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        const int x = GET_X_LPARAM(lParam);
+        const int y = GET_Y_LPARAM(lParam);
+        const bool hc = HitRect(CloseButtonRect(rc.right), x, y);
+        const bool hs = HitRect(SaveButtonRect(rc.right, rc.bottom), x, y);
+        const bool hx = HitRect(CancelButtonRect(rc.right, rc.bottom), x, y);
+        if (hc != g_hoverClose || hs != g_hoverSave || hx != g_hoverCancel) {
+            g_hoverClose = hc;
+            g_hoverSave = hs;
+            g_hoverCancel = hx;
+            InvalidateRect(hwnd, NULL, FALSE);
+        }
+        if (!trackingMouse) {
+            TRACKMOUSEEVENT tme = { sizeof(tme), TME_LEAVE, hwnd, 0 };
+            if (TrackMouseEvent(&tme)) {
+                trackingMouse = true;
+            }
+        }
+        break;
+    }
+
+    case WM_MOUSELEAVE:
+        trackingMouse = false;
+        if (g_hoverClose || g_hoverSave || g_hoverCancel) {
+            g_hoverClose = g_hoverSave = g_hoverCancel = false;
+            InvalidateRect(hwnd, NULL, FALSE);
+        }
+        break;
+
+    case WM_LBUTTONUP:
+    {
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        const int x = GET_X_LPARAM(lParam);
+        const int y = GET_Y_LPARAM(lParam);
+        if (HitRect(CloseButtonRect(rc.right), x, y)) {
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        if (HitRect(SaveButtonRect(rc.right, rc.bottom), x, y)) {
+            SendMessageW(hwnd, WM_COMMAND, MAKEWPARAM(IDC_SAVE_BUTTON, BN_CLICKED), 0);
+            return 0;
+        }
+        if (HitRect(CancelButtonRect(rc.right, rc.bottom), x, y)) {
+            PostMessage(hwnd, WM_CLOSE, 0, 0);
+            return 0;
+        }
+        break;
+    }
+
     case WM_CREATE:
     {
         // 打开设置窗口时，先取消所有热键监听
         UnregisterHotKeys(g_hMainWnd);
+        trackingMouse = false;
+        g_hoverClose = g_hoverSave = g_hoverCancel = false;
 
-        // 统一使用系统“消息字体”（中文环境即微软雅黑 12px）。
-        // 标准控件不设置字体时会退回 16px 的 SYSTEM_FONT，中文标签会被撑大并裁切。
+        // 统一字体：Microsoft YaHei UI 12px（≈9pt），与 GDI+ 绘制的标题/按钮保持一致。
+        // 不显式指定时标准控件会退回 16px 的 SYSTEM_FONT，中文标签会被撑大并裁切。
         static HFONT hUiFont = NULL;
         if (!hUiFont) {
-            NONCLIENTMETRICSW ncm = { sizeof(NONCLIENTMETRICSW) };
-            if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(ncm), &ncm, 0)) {
-                hUiFont = CreateFontIndirectW(&ncm.lfMessageFont);
-            }
+            LOGFONTW lf = { 0 };
+            lf.lfHeight = -12;
+            lf.lfWeight = FW_NORMAL;
+            lf.lfCharSet = DEFAULT_CHARSET;
+            lf.lfQuality = CLEARTYPE_QUALITY;
+            wcscpy_s(lf.lfFaceName, L"Microsoft YaHei UI");
+            hUiFont = CreateFontIndirectW(&lf);
             if (!hUiFont) {
                 hUiFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
             }
@@ -607,7 +858,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         const int buttonX = 350;      // “设置”按钮
         const int buttonWidth = 60;
 
-        int yPos = 20;
+        int yPos = 20 + kTitleBarHeight;   // 顶部 36px 留给自绘标题栏
         wchar_t keyText[128];
 
         // ============ 第一块：窗口居中 ============
@@ -642,7 +893,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_CENTER_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 38;
+        yPos += 44;
 
         // ============ 第二块：窗口抖动 ============
         CreateWindow(L"STATIC", L"窗口抖动:",
@@ -676,7 +927,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_SHAKE_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 38;
+        yPos += 44;
 
         // ============ 第三块：窗口置底 ============
         CreateWindow(L"STATIC", L"窗口置底:",
@@ -710,7 +961,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_SEND_TO_BOTTOM_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 38;
+        yPos += 44;
 
         // ============ 第四块：透明度控制 ============
         CreateWindow(L"STATIC", L"透明度控制:",
@@ -788,7 +1039,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_RESET_TRANSPARENCY_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 30;
+        yPos += 36;
 
         // ============ 第五块：透明度步长 ============
         wchar_t stepText[64];
@@ -809,7 +1060,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         SendMessage(hTransparencySlider, TBM_SETPOS, TRUE, g_transparencyStep);
         SendMessage(hTransparencySlider, TBM_SETTICFREQ, 5, 0);
 
-        yPos += 40;
+        yPos += 46;
 
         // ============ 第六块：启动提示开关 ============
         hShowStartupMsg = CreateWindow(L"BUTTON", L"启动成功后显示提示框",
@@ -818,7 +1069,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             hwnd, (HMENU)IDC_SHOW_STARTUP_MSG, GetModuleHandle(NULL), NULL);
         SendMessage(hShowStartupMsg, BM_SETCHECK, g_showStartupMessage ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        yPos += 26;
+        yPos += 32;
 
         // ============ 第七块：窗口居中选项 ============
         hCenterIgnoreTaskbar = CreateWindow(L"BUTTON", L"居中时忽略任务栏",
@@ -827,7 +1078,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             hwnd, (HMENU)IDC_CENTER_IGNORE_TASKBAR, GetModuleHandle(NULL), NULL);
         SendMessage(hCenterIgnoreTaskbar, BM_SETCHECK, g_centerIgnoreTaskbar ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        yPos += 28;
+        yPos += 34;
 
         // ============ 第八块：开机自启 ============
         BOOL autoStartOn = IsAutoStartRegistered();
@@ -874,7 +1125,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         // 普通用户写注册表 Run 无法设置延迟，直接置灰下拉框
         UpdateAutoStartEnabledState(hAutoStart, hAutoStartDelay);
 
-        yPos += 30;
+        yPos += 34;
 
         // ============ 第九块：当前权限状态 ============
         hAdminStatus = CreateWindow(L"STATIC", L"",
@@ -941,17 +1192,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             ShowWindow(hPermissionHelp, SW_HIDE);
         }
 
-        // 保存按钮
-        hSaveButton = CreateWindow(L"BUTTON", L"保存设置",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            20, yPos, 100, 30,
-            hwnd, (HMENU)IDC_SAVE_BUTTON, GetModuleHandle(NULL), NULL);
-
-        // 关闭按钮（放在保存按钮右侧）
-        CreateWindow(L"BUTTON", L"关闭",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            140, yPos, 100, 30,
-            hwnd, (HMENU)IDCANCEL, GetModuleHandle(NULL), NULL);
+        // 保存/关闭按钮改为在 WM_PAINT 里用 GDI+ 自绘（见底部区域），这里不再创建原生按钮
 
         // 统一设置字体（放在最后，一次性覆盖所有已创建的控件）
         EnumChildWindows(hwnd, SetChildFontProc, (LPARAM)hUiFont);
@@ -961,11 +1202,16 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
     case WM_CTLCOLORSTATIC:
     {
-        // 静态文本透明绘制，避免出现与窗口底色不一致的灰色方块
+        // 静态文本透明绘制，并使用与自绘背景一致的画刷，避免出现灰色方块
         HDC hdcStatic = (HDC)wParam;
         SetBkMode(hdcStatic, TRANSPARENT);
-        return (LRESULT)GetSysColorBrush(COLOR_WINDOW);
+        return (LRESULT)SettingsBgBrush();
     }
+
+    case WM_CTLCOLORBTN:
+        // 复选框等按钮的底色也贴合自绘背景
+        SetBkMode((HDC)wParam, TRANSPARENT);
+        return (LRESULT)SettingsBgBrush();
 
     case WM_DESTROY:
         // 设置窗口每次打开都会重新创建 Tooltip 和图标，销毁时必须一并释放，避免句柄泄漏
@@ -1417,31 +1663,37 @@ void ShowSettingsWindow()
     wc.hInstance = GetModuleHandle(NULL);
     wc.lpszClassName = L"SettingsWindowClass";
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = NULL;      // 背景完全自绘
     wc.hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_WINCLEARFOCUS));
 
     RegisterClass(&wc);
 
     // 计算窗口居中位置
-    int windowWidth = 460;
-    int windowHeight = 630;
+    int windowWidth = kSettingsWidth;
+    int windowHeight = kSettingsHeight;
     int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     int screenHeight = GetSystemMetrics(SM_CYSCREEN);
     int x = (screenWidth - windowWidth) / 2;
     int y = (screenHeight - windowHeight) / 2;
 
+    // 无边框 + 可缩放边缘；标题栏与圆角由我们自绘/DWM 提供
     wchar_t windowTitle[100];
     swprintf_s(windowTitle, 100, L"WinClearFocus %s 设置", APP_VERSION);
-    g_hSettingsWnd = CreateWindow(
+    g_hSettingsWnd = CreateWindowExW(
+        WS_EX_APPWINDOW,
         L"SettingsWindowClass",
         windowTitle,
-        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        WS_POPUP | WS_CLIPCHILDREN,
         x, y,
         windowWidth, windowHeight,
         NULL, NULL, GetModuleHandle(NULL), NULL
     );
 
     if (g_hSettingsWnd) {
+        // Windows 11：DWM 圆角（Win10 上调用失败无副作用）
+        DWM_WINDOW_CORNER_PREFERENCE corner = DWMWCP_ROUND;
+        DwmSetWindowAttribute(g_hSettingsWnd, DWMWA_WINDOW_CORNER_PREFERENCE, &corner, sizeof(corner));
+
         ShowWindow(g_hSettingsWnd, SW_SHOW);
         UpdateWindow(g_hSettingsWnd);
     }
