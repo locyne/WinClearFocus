@@ -50,6 +50,8 @@
 #define IDC_SEND_TO_BOTTOM_ENABLE 2022
 #define IDC_SEND_TO_BOTTOM_DISPLAY 2023
 #define IDC_SEND_TO_BOTTOM_BUTTON 2024
+#define IDC_AUTOSTART 2025
+#define IDC_AUTOSTART_DELAY 2026
 
 // 全局变量
 HWND g_hMainWnd = NULL;           // 主窗口句柄
@@ -59,6 +61,9 @@ int g_transparencyStep = 10;      // 透明度调整步长（默认10%）
 
 // 启动提示开关：1=启动后弹提示框，0=静默进托盘（对应 config.ini 的 [Settings] ShowStartupMessage）
 int g_showStartupMessage = 1;
+
+// 开机自启的延迟秒数（0/5/10/15/30，0 = 不延迟）
+int g_autoStartDelay = 0;
 
 // 窗口居中时是否忽略任务栏：
 // 1 = 以显示器工作区 rcWork 居中（默认，不会被任务栏挡住）
@@ -316,6 +321,238 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
+// ==================== 开机自启 ====================
+
+#define AUTOSTART_RUN_KEY    L"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+#define AUTOSTART_RUN_VALUE  L"WinClearFocus"
+#define AUTOSTART_TASK_PATH  L"\\WinClearFocus\\WinClearFocus"
+
+// 取系统目录下 schtasks.exe 的完整路径：不要按 PATH 搜索，
+// 否则程序目录里放一个同名 exe 就能劫持我们（尤其当程序以管理员运行时）
+static const wchar_t* SchtasksPath()
+{
+    static wchar_t path[MAX_PATH] = { 0 };
+    if (!path[0]) {
+        UINT len = GetSystemDirectoryW(path, MAX_PATH);
+        if (len == 0 || len >= MAX_PATH) {
+            wcscpy_s(path, MAX_PATH, L"C:\\Windows\\System32\\schtasks.exe");
+        } else {
+            wcscat_s(path, MAX_PATH, L"\\schtasks.exe");
+        }
+    }
+    return path;
+}
+
+// 运行命令行（窗口隐藏、输出丢弃），返回退出码是否为 0
+static bool RunProcess(const wchar_t* cmdLine, DWORD* exitCode)
+{
+    wchar_t buffer[2048];
+    wcscpy_s(buffer, 2048, cmdLine);
+
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), NULL, TRUE };
+    HANDLE hNul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, NULL);
+
+    STARTUPINFOW si = { sizeof(si) };
+    si.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+    si.wShowWindow = SW_HIDE;
+    si.hStdInput = NULL;
+    si.hStdOutput = hNul;
+    si.hStdError = hNul;
+
+    PROCESS_INFORMATION pi = { 0 };
+    BOOL started = CreateProcessW(NULL, buffer, NULL, NULL, TRUE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi);
+    if (!started) {
+        if (hNul) CloseHandle(hNul);
+        if (exitCode) *exitCode = GetLastError();
+        return false;
+    }
+
+    WaitForSingleObject(pi.hProcess, 30000);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    if (hNul) CloseHandle(hNul);
+
+    if (exitCode) *exitCode = code;
+    return code == 0;
+}
+
+// HKCU\...\Run 里是否已有本程序的启动项
+static bool RunValueExists()
+{
+    wchar_t value[MAX_PATH + 32] = { 0 };
+    DWORD size = sizeof(value);
+    LONG r = RegGetValueW(HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, AUTOSTART_RUN_VALUE,
+                          RRF_RT_REG_SZ, NULL, value, &size);
+    return r == ERROR_SUCCESS;
+}
+
+// 写入/删除注册表启动项，值形如 "C:\path\WinClearFocus.exe" -silent
+static bool SetRunValue(bool enable)
+{
+    HKEY key = NULL;
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, AUTOSTART_RUN_KEY, 0, NULL, 0, KEY_SET_VALUE,
+                        NULL, &key, NULL) != ERROR_SUCCESS) {
+        return false;
+    }
+
+    bool ok = true;
+    if (enable) {
+        wchar_t exePath[MAX_PATH] = { 0 };
+        if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) {
+            ok = false;
+        } else {
+            wchar_t value[MAX_PATH + 32];
+            swprintf_s(value, MAX_PATH + 32, L"\"%s\" -silent", exePath);
+            ok = RegSetValueExW(key, AUTOSTART_RUN_VALUE, 0, REG_SZ, (const BYTE*)value,
+                                (DWORD)((wcslen(value) + 1) * sizeof(wchar_t))) == ERROR_SUCCESS;
+        }
+    } else {
+        LONG r = RegDeleteValueW(key, AUTOSTART_RUN_VALUE);
+        ok = (r == ERROR_SUCCESS || r == ERROR_FILE_NOT_FOUND);
+    }
+
+    RegCloseKey(key);
+    return ok;
+}
+
+// 计划任务 \WinClearFocus\WinClearFocus 是否存在
+static bool TaskExists()
+{
+    wchar_t cmd[512];
+    swprintf_s(cmd, 512, L"%s /query /tn \"%s\"", SchtasksPath(), AUTOSTART_TASK_PATH);
+    DWORD code = 1;
+    RunProcess(cmd, &code);
+    return code == 0;
+}
+
+// 创建计划任务：登录时（可延迟）以最高权限启动 "<exe>" -silent
+static bool CreateScheduledTask(int delaySeconds)
+{
+    wchar_t exePath[MAX_PATH] = { 0 };
+    if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) {
+        return false;
+    }
+
+    wchar_t cmd[2048];
+    if (delaySeconds > 0) {
+        // /tr 的值本身含引号，需要写成 \" 才能穿过命令行解析；
+        // /delay 的格式是 mmmm:ss（分钟:秒），15 秒 => 0000:15
+        swprintf_s(cmd, 2048,
+            L"%s /create /tn \"%s\" /tr \"\\\"%s\\\" -silent\" /sc onlogon /rl highest /delay %04d:%02d /f",
+            SchtasksPath(), AUTOSTART_TASK_PATH, exePath, delaySeconds / 60, delaySeconds % 60);
+    } else {
+        swprintf_s(cmd, 2048,
+            L"%s /create /tn \"%s\" /tr \"\\\"%s\\\" -silent\" /sc onlogon /rl highest /f",
+            SchtasksPath(), AUTOSTART_TASK_PATH, exePath);
+    }
+
+    DWORD code = 1;
+    return RunProcess(cmd, &code);
+}
+
+// 删除计划任务
+static bool DeleteScheduledTask()
+{
+    wchar_t cmd[512];
+    swprintf_s(cmd, 512, L"%s /delete /tn \"%s\" /f", SchtasksPath(), AUTOSTART_TASK_PATH);
+    DWORD code = 1;
+    RunProcess(cmd, &code);
+    return code == 0;
+}
+
+// 启动项是否已存在（注册表或计划任务任一）
+static bool IsAutoStartRegistered()
+{
+    if (RunValueExists()) {
+        return true;
+    }
+    return TaskExists();
+}
+
+// 应用开机自启设置；detail 返回给用户看的说明
+static bool ApplyAutoStart(BOOL enable, int delaySeconds, wchar_t* detail, size_t detailLen)
+{
+    if (!enable) {
+        bool runOk = SetRunValue(false);
+        bool taskOk = true;
+        if (TaskExists()) {
+            taskOk = DeleteScheduledTask();
+        }
+        if (!runOk) {
+            swprintf_s(detail, detailLen, L"移除注册表启动项失败，请检查系统权限。");
+            return false;
+        }
+        if (!taskOk) {
+            swprintf_s(detail, detailLen, L"已移除注册表启动项，但计划任务 %s 需要管理员权限才能删除。", AUTOSTART_TASK_PATH);
+            return false;
+        }
+        swprintf_s(detail, detailLen, L"已关闭（注册表启动项和计划任务均已清理）。");
+        return true;
+    }
+
+    if (!IsUserAnAdmin()) {
+        // 普通用户：只能写 HKCU Run，无法设置延迟
+        if (!SetRunValue(true)) {
+            swprintf_s(detail, detailLen, L"写入注册表 HKCU\\...\\Run 失败（错误码 %lu）。", GetLastError());
+            return false;
+        }
+        // 如果以前用管理员建过计划任务，尽力清掉，避免双重启动
+        bool taskRemoved = true;
+        if (TaskExists()) {
+            taskRemoved = DeleteScheduledTask();
+        }
+        if (!taskRemoved) {
+            swprintf_s(detail, detailLen,
+                L"已写入注册表 HKCU\\...\\Run，但检测到已有计划任务 %s 且无权限删除，登录时可能重复启动；建议以管理员身份重新设置。",
+                AUTOSTART_TASK_PATH);
+            return true;
+        }
+        swprintf_s(detail, detailLen, L"已启用（注册表 HKCU\\...\\Run，普通用户权限不支持延迟启动）。");
+        return true;
+    }
+
+    // 管理员：先无条件删除可能残留的同名任务，再用统一参数重建一个干净的。
+    // 任务不存在时 schtasks /delete 会返回非 0，这里刻意忽略返回值（静默清理，不打扰用户）
+    DeleteScheduledTask();
+
+    // 管理员：创建登录时运行、最高权限的计划任务
+    if (!CreateScheduledTask(delaySeconds)) {
+        swprintf_s(detail, detailLen, L"创建计划任务 %s 失败。请确认程序以管理员身份运行，且系统允许创建计划任务。", AUTOSTART_TASK_PATH);
+        return false;
+    }
+
+    // 防止双重启动：计划任务建好后删掉旧的注册表启动项
+    SetRunValue(false);
+
+    if (delaySeconds > 0) {
+        swprintf_s(detail, detailLen, L"已启用（计划任务 %s，登录后延迟 %d 秒，最高权限）。",
+                   AUTOSTART_TASK_PATH, delaySeconds);
+    } else {
+        swprintf_s(detail, detailLen, L"已启用（计划任务 %s，登录时启动，最高权限）。", AUTOSTART_TASK_PATH);
+    }
+    return true;
+}
+
+// 下拉框当前选中的延迟秒数
+static int ComboAutoStartDelay(HWND combo)
+{
+    static const int kDelays[] = { 0, 5, 10, 15, 30 };
+    int sel = (int)SendMessageW(combo, CB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= (int)(sizeof(kDelays) / sizeof(kDelays[0]))) {
+        return 0;
+    }
+    return kDelays[sel];
+}
+
+// 只有“勾选 + 管理员”才允许选延迟
+static void UpdateAutoStartEnabledState(HWND check, HWND combo)
+{
+    BOOL on = (SendMessageW(check, BM_GETCHECK, 0, 0) == BST_CHECKED);
+    EnableWindow(combo, on && IsUserAnAdmin() != FALSE);
+}
+
 // 给设置窗口的所有子控件统一应用字体的回调
 static BOOL CALLBACK SetChildFontProc(HWND child, LPARAM lParam)
 {
@@ -333,6 +570,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     static HWND hShowStartupMsg, hCenterIgnoreTaskbar, hAdminStatus, hElevateButton;
     static HWND hResetTransparencyDisplay, hResetTransparencyButton;
     static HWND hSendToBottomEnable, hSendToBottomDisplay, hSendToBottomButton;
+    static HWND hAutoStart, hAutoStartDelay;
     static HWND hPermissionTip = NULL;       // “权限说明”的 Tooltip 窗口
     static HICON hPermissionIcon = NULL;     // 问号图标（自建副本，需要自己销毁）
     static bool permissionIconOwned = false;
@@ -590,6 +828,53 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         SendMessage(hCenterIgnoreTaskbar, BM_SETCHECK, g_centerIgnoreTaskbar ? BST_CHECKED : BST_UNCHECKED, 0);
 
         yPos += 28;
+
+        // ============ 第八块：开机自启 ============
+        BOOL autoStartOn = IsAutoStartRegistered();
+        hAutoStart = CreateWindow(L"BUTTON", L"开机自动启动（静默）",
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            labelX, yPos, 260, 22,
+            hwnd, (HMENU)IDC_AUTOSTART, GetModuleHandle(NULL), NULL);
+        SendMessage(hAutoStart, BM_SETCHECK, autoStartOn ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        yPos += 26;
+
+        CreateWindow(L"STATIC", L"延迟启动（秒）:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos, labelWidth, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hAutoStartDelay = CreateWindow(L"COMBOBOX", NULL,
+            WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
+            fieldX, yPos, 100, 200,
+            hwnd, (HMENU)IDC_AUTOSTART_DELAY, GetModuleHandle(NULL), NULL);
+        SendMessage(hAutoStartDelay, CB_ADDSTRING, 0, (LPARAM)L"未选择");
+        SendMessage(hAutoStartDelay, CB_ADDSTRING, 0, (LPARAM)L"5");
+        SendMessage(hAutoStartDelay, CB_ADDSTRING, 0, (LPARAM)L"10");
+        SendMessage(hAutoStartDelay, CB_ADDSTRING, 0, (LPARAM)L"15");
+        SendMessage(hAutoStartDelay, CB_ADDSTRING, 0, (LPARAM)L"30");
+
+        {
+            const int delays[] = { 0, 5, 10, 15, 30 };
+            int sel = 0;
+            for (int i = 0; i < 5; ++i) {
+                if (delays[i] == g_autoStartDelay) {
+                    sel = i;
+                    break;
+                }
+            }
+            SendMessage(hAutoStartDelay, CB_SETCURSEL, sel, 0);
+        }
+
+        CreateWindow(L"STATIC", isAdmin ? L"（登录后延迟启动）" : L"（延迟需管理员权限）",
+            WS_VISIBLE | WS_CHILD,
+            fieldX + 110, yPos, 200, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        // 普通用户写注册表 Run 无法设置延迟，直接置灰下拉框
+        UpdateAutoStartEnabledState(hAutoStart, hAutoStartDelay);
+
+        yPos += 30;
 
         // ============ 第九块：当前权限状态 ============
         hAdminStatus = CreateWindow(L"STATIC", L"",
@@ -870,6 +1155,9 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         case IDC_SEND_TO_BOTTOM_ENABLE:
             g_enableSendToBottom = (SendMessage(hSendToBottomEnable, BM_GETCHECK, 0, 0) == BST_CHECKED);
             break;
+        case IDC_AUTOSTART:
+            UpdateAutoStartEnabledState(hAutoStart, hAutoStartDelay);
+            break;
         case IDC_SAVE_BUTTON:
         {
             // 获取透明度步长
@@ -881,6 +1169,10 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             // 获取“居中时忽略任务栏”开关
             g_centerIgnoreTaskbar = (SendMessage(hCenterIgnoreTaskbar, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
 
+            // 开机自启：先记住勾选状态和下拉框选择
+            BOOL wantAutoStart = (SendMessage(hAutoStart, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            g_autoStartDelay = ComboAutoStartDelay(hAutoStartDelay);
+
             // 保存配置
             SaveConfig();
 
@@ -888,7 +1180,18 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             UnregisterHotKeys(g_hMainWnd);
             RegisterHotKeys(g_hMainWnd);
 
-            MessageBox(hwnd, L"设置已保存！", L"提示", MB_OK | MB_ICONINFORMATION);
+            // 应用开机自启（写注册表或建计划任务），并把结果一并提示给用户
+            wchar_t detail[512] = L"";
+            bool autoStartOk = ApplyAutoStart(wantAutoStart, g_autoStartDelay, detail, 512);
+
+            wchar_t msg[1024];
+            if (autoStartOk) {
+                swprintf_s(msg, 1024, L"设置已保存！\n\n开机自启：%s", detail);
+                MessageBox(hwnd, msg, L"提示", MB_OK | MB_ICONINFORMATION);
+            } else {
+                swprintf_s(msg, 1024, L"设置已保存，但开机自启配置失败：\n\n%s", detail);
+                MessageBox(hwnd, msg, L"警告", MB_OK | MB_ICONWARNING);
+            }
             break;
         }
         case IDC_ELEVATE:
@@ -1362,6 +1665,12 @@ void LoadConfig()
     // 启动提示开关：默认显示，首次运行生成的配置也会写成 1
     g_showStartupMessage = GetPrivateProfileInt(L"Settings", L"ShowStartupMessage", 1, CONFIG_FILE);
 
+    // 开机自启延迟（秒）：只接受 0/5/10/15/30，其它值一律当 0（未选择）
+    g_autoStartDelay = GetPrivateProfileInt(L"Settings", L"AutoStartDelay", 0, CONFIG_FILE);
+    if (g_autoStartDelay != 5 && g_autoStartDelay != 10 &&
+        g_autoStartDelay != 15 && g_autoStartDelay != 30) {
+        g_autoStartDelay = 0;
+    }
 
     // 居中时是否忽略任务栏：默认忽略（用工作区 rcWork 居中）
     g_centerIgnoreTaskbar = GetPrivateProfileInt(L"Settings", L"CenterIgnoreTaskbar", 1, CONFIG_FILE);
@@ -1420,6 +1729,9 @@ void SaveConfig()
     swprintf(value, 32, L"%d", g_showStartupMessage);
     WritePrivateProfileString(L"Settings", L"ShowStartupMessage", value, CONFIG_FILE);
 
+    // 保存开机自启延迟
+    swprintf(value, 32, L"%d", g_autoStartDelay);
+    WritePrivateProfileString(L"Settings", L"AutoStartDelay", value, CONFIG_FILE);
 
     // 保存“居中时忽略任务栏”
     swprintf(value, 32, L"%d", g_centerIgnoreTaskbar);
