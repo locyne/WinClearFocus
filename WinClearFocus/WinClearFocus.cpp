@@ -28,7 +28,7 @@
 #define ID_HOTKEY_SEND_TO_BOTTOM 6
 #define CONFIG_FILE L".\\config.ini"
 #define MAX_PATH_LEN 260
-#define APP_VERSION L"v0.2.0"
+#define APP_VERSION L"v1.0.0"
 
 // 控件ID
 #define IDC_TRANSPARENCY_UP_BUTTON 2001
