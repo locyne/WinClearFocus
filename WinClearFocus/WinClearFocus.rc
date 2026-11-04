@@ -1,0 +1,8 @@
+#include "resource.h"
+
+IDI_WINCLEARFOCUS ICON "WinClearFocus.ico"
+
+// comctl32 v6 清单：让复选框、输入框、滑动条等原生控件使用 Win11 视觉样式。
+// 注意：MinGW 不支持 #pragma comment(linker, "/manifestdependency:...")（那是 MSVC 的链接器指令），
+// 所以这里用标准做法把清单作为 RT_MANIFEST 资源编进 exe，两个工具链都通用。
+1 24 "WinClearFocus.manifest"
