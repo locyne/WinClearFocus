@@ -1,0 +1,24 @@
+# IDE
+.idea/
+.vs/
+*.user
+
+# CMake / 构建产物
+cmake-build-*/
+build/
+out/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# 编译中间文件
+*.o
+*.obj
+*.exe
+*.pdb
+*.ilk
+
+# 运行时生成的配置（各人快捷键不同，不入库）
+# 注意：WinClearFocus/config.ini 是默认配置模板，这里只忽略构建目录外的临时配置
+/config.ini
