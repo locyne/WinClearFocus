@@ -1,4 +1,4 @@
-﻿#include <windows.h>
+#include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>       // IsUserAnAdmin：判断当前进程是否以管理员运行
 #include <commctrl.h>
@@ -26,7 +26,6 @@
 #define ID_HOTKEY_SHAKE_WINDOW 4
 #define ID_HOTKEY_RESET_TRANSPARENCY 5
 #define ID_HOTKEY_SEND_TO_BOTTOM 6
-#define CONFIG_FILE L".\\config.ini"
 #define MAX_PATH_LEN 260
 #define APP_VERSION L"v1.0.0"
 
@@ -66,6 +65,11 @@ int g_transparencyStep = 10;      // 透明度调整步长（默认10%）
 
 // 启动提示开关：1=启动后弹提示框，0=静默进托盘（对应 config.ini 的 [Settings] ShowStartupMessage）
 int g_showStartupMessage = 1;
+
+// 配置文件绝对路径：exe 所在目录下的 config.ini。
+// 不能用相对路径 ".\config.ini"：计划任务在登录时以管理员身份启动，
+// 工作目录往往是 C:\Windows\System32，会导致配置读取/保存全部失效。
+wchar_t g_configPath[MAX_PATH] = { 0 };
 
 // 开机自启的延迟秒数（0/5/10/15/30，0 = 不延迟）
 int g_autoStartDelay = 0;
@@ -193,9 +197,32 @@ void RestartAsAdmin()
     PostQuitMessage(0);
 }
 
+// 计算配置文件绝对路径：<exe 所在目录>\config.ini
+static void GetConfigPath()
+{
+    wchar_t exePath[MAX_PATH] = { 0 };
+    if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) {
+        // 极端情况下退回当前目录
+        wcscpy_s(g_configPath, MAX_PATH, L"config.ini");
+        return;
+    }
+
+    wchar_t* slash = wcsrchr(exePath, L'\\');
+    if (slash) {
+        *(slash + 1) = L'\0';   // 保留目录部分（含末尾反斜杠）
+    } else {
+        exePath[0] = L'\0';
+    }
+
+    swprintf_s(g_configPath, MAX_PATH, L"%sconfig.ini", exePath);
+}
+
 // 主函数
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+    // 最先确定配置文件路径：后面 LoadConfig() 和所有保存都依赖它
+    GetConfigPath();
+
     // 初始化通用控件（Win11 视觉样式由 exe 内嵌的 comctl32 v6 manifest 启用）
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
@@ -895,41 +922,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
         yPos += 44;
 
-        // ============ 第二块：窗口抖动 ============
-        CreateWindow(L"STATIC", L"窗口抖动:",
-            WS_VISIBLE | WS_CHILD,
-            labelX, yPos, labelWidth, 22,
-            hwnd, NULL, GetModuleHandle(NULL), NULL);
-
-        hShakeEnable = CreateWindow(L"BUTTON", L"启用",
-            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-            fieldX, yPos, 60, 22,
-            hwnd, (HMENU)IDC_SHAKE_ENABLE, GetModuleHandle(NULL), NULL);
-        SendMessage(hShakeEnable, BM_SETCHECK, g_enableShake ? BST_CHECKED : BST_UNCHECKED, 0);
-
-        yPos += 28;
-
-        CreateWindow(L"STATIC", L"热键:",
-            WS_VISIBLE | WS_CHILD,
-            labelX, yPos, labelWidth, fieldHeight,
-            hwnd, NULL, GetModuleHandle(NULL), NULL);
-
-        hShakeDisplay = CreateWindow(L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
-            fieldX, yPos, fieldWidth, fieldHeight,
-            hwnd, (HMENU)IDC_SHAKE_DISPLAY, GetModuleHandle(NULL), NULL);
-        // 设置当前热键显示
-        swprintf_s(keyText, 128, L"%s+%s", GetModifierName(g_shakeModifiers), GetKeyName(g_shakeKey));
-        SetWindowText(hShakeDisplay, keyText);
-
-        hShakeButton = CreateWindow(L"BUTTON", L"设置",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            buttonX, yPos, buttonWidth, fieldHeight,
-            hwnd, (HMENU)IDC_SHAKE_BUTTON, GetModuleHandle(NULL), NULL);
-
-        yPos += 44;
-
-        // ============ 第三块：窗口置底 ============
+        // ============ 第二块：窗口置底 ============
         CreateWindow(L"STATIC", L"窗口置底:",
             WS_VISIBLE | WS_CHILD,
             labelX, yPos, labelWidth, 22,
@@ -960,6 +953,40 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_SEND_TO_BOTTOM_BUTTON, GetModuleHandle(NULL), NULL);
+
+        yPos += 44;
+
+        // ============ 第三块：窗口抖动 ============
+        CreateWindow(L"STATIC", L"窗口抖动:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos, labelWidth, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hShakeEnable = CreateWindow(L"BUTTON", L"启用",
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            fieldX, yPos, 60, 22,
+            hwnd, (HMENU)IDC_SHAKE_ENABLE, GetModuleHandle(NULL), NULL);
+        SendMessage(hShakeEnable, BM_SETCHECK, g_enableShake ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        yPos += 28;
+
+        CreateWindow(L"STATIC", L"热键:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos, labelWidth, fieldHeight,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hShakeDisplay = CreateWindow(L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
+            fieldX, yPos, fieldWidth, fieldHeight,
+            hwnd, (HMENU)IDC_SHAKE_DISPLAY, GetModuleHandle(NULL), NULL);
+        // 设置当前热键显示
+        swprintf_s(keyText, 128, L"%s+%s", GetModifierName(g_shakeModifiers), GetKeyName(g_shakeKey));
+        SetWindowText(hShakeDisplay, keyText);
+
+        hShakeButton = CreateWindow(L"BUTTON", L"设置",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            buttonX, yPos, buttonWidth, fieldHeight,
+            hwnd, (HMENU)IDC_SHAKE_BUTTON, GetModuleHandle(NULL), NULL);
 
         yPos += 44;
 
@@ -1912,50 +1939,50 @@ void SendWindowToBottom()
 // 加载配置
 void LoadConfig()
 {
-    g_transparencyStep = GetPrivateProfileInt(L"Settings", L"TransparencyStep", 10, CONFIG_FILE);
+    g_transparencyStep = GetPrivateProfileInt(L"Settings", L"TransparencyStep", 10, g_configPath);
 
     // 启动提示开关：默认显示，首次运行生成的配置也会写成 1
-    g_showStartupMessage = GetPrivateProfileInt(L"Settings", L"ShowStartupMessage", 1, CONFIG_FILE);
+    g_showStartupMessage = GetPrivateProfileInt(L"Settings", L"ShowStartupMessage", 1, g_configPath);
 
     // 开机自启延迟（秒）：只接受 0/5/10/15/30，其它值一律当 0（未选择）
-    g_autoStartDelay = GetPrivateProfileInt(L"Settings", L"AutoStartDelay", 0, CONFIG_FILE);
+    g_autoStartDelay = GetPrivateProfileInt(L"Settings", L"AutoStartDelay", 0, g_configPath);
     if (g_autoStartDelay != 5 && g_autoStartDelay != 10 &&
         g_autoStartDelay != 15 && g_autoStartDelay != 30) {
         g_autoStartDelay = 0;
     }
 
     // 居中时是否忽略任务栏：默认忽略（用工作区 rcWork 居中）
-    g_centerIgnoreTaskbar = GetPrivateProfileInt(L"Settings", L"CenterIgnoreTaskbar", 1, CONFIG_FILE);
+    g_centerIgnoreTaskbar = GetPrivateProfileInt(L"Settings", L"CenterIgnoreTaskbar", 1, g_configPath);
 
     // 加载热键配置
     // 默认值：窗口居中 Alt+Shift+C，窗口抖动 Alt+Shift+Down，
     //        透明度增加 Alt+Shift+Right，透明度减少 Alt+Shift+Left
     const UINT defaultModifiers = MOD_ALT | MOD_SHIFT;
 
-    g_transparencyUpModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpModifiers", defaultModifiers, CONFIG_FILE);
-    g_transparencyUpKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpKey", VK_RIGHT, CONFIG_FILE);
-    g_transparencyDownModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownModifiers", defaultModifiers, CONFIG_FILE);
-    g_transparencyDownKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownKey", VK_LEFT, CONFIG_FILE);
+    g_transparencyUpModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpModifiers", defaultModifiers, g_configPath);
+    g_transparencyUpKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpKey", VK_RIGHT, g_configPath);
+    g_transparencyDownModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownModifiers", defaultModifiers, g_configPath);
+    g_transparencyDownKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownKey", VK_LEFT, g_configPath);
     // 窗口居中：默认 Alt+Shift+C
-    g_centerModifiers = GetPrivateProfileInt(L"Hotkeys", L"CenterModifiers", defaultModifiers, CONFIG_FILE);
-    g_centerKey = GetPrivateProfileInt(L"Hotkeys", L"CenterKey", 'C', CONFIG_FILE);
+    g_centerModifiers = GetPrivateProfileInt(L"Hotkeys", L"CenterModifiers", defaultModifiers, g_configPath);
+    g_centerKey = GetPrivateProfileInt(L"Hotkeys", L"CenterKey", 'C', g_configPath);
     // 窗口抖动：默认 Alt+Shift+Down
-    g_shakeModifiers = GetPrivateProfileInt(L"Hotkeys", L"ShakeModifiers", defaultModifiers, CONFIG_FILE);
-    g_shakeKey = GetPrivateProfileInt(L"Hotkeys", L"ShakeKey", VK_DOWN, CONFIG_FILE);
+    g_shakeModifiers = GetPrivateProfileInt(L"Hotkeys", L"ShakeModifiers", defaultModifiers, g_configPath);
+    g_shakeKey = GetPrivateProfileInt(L"Hotkeys", L"ShakeKey", VK_DOWN, g_configPath);
     // 重置透明度：默认 Alt+Shift+Up
-    g_resetTransparencyModifiers = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyModifiers", defaultModifiers, CONFIG_FILE);
-    g_resetTransparencyKey = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyKey", VK_UP, CONFIG_FILE);
+    g_resetTransparencyModifiers = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyModifiers", defaultModifiers, g_configPath);
+    g_resetTransparencyKey = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyKey", VK_UP, g_configPath);
     // 窗口置底：默认 Alt+Shift+Z
-    g_sendToBottomModifiers = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomModifiers", defaultModifiers, CONFIG_FILE);
-    g_sendToBottomKey = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomKey", 'Z', CONFIG_FILE);
+    g_sendToBottomModifiers = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomModifiers", defaultModifiers, g_configPath);
+    g_sendToBottomKey = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomKey", 'Z', g_configPath);
 
     // 加载热键开关状态（默认只启用窗口居中）
-    g_enableTransparencyUp = GetPrivateProfileInt(L"Switches", L"EnableTransparencyUp", 0, CONFIG_FILE);
-    g_enableTransparencyDown = GetPrivateProfileInt(L"Switches", L"EnableTransparencyDown", 0, CONFIG_FILE);
-    g_enableCenter = GetPrivateProfileInt(L"Switches", L"EnableCenter", 1, CONFIG_FILE);
-    g_enableShake = GetPrivateProfileInt(L"Switches", L"EnableShake", 0, CONFIG_FILE);
-    g_enableResetTransparency = GetPrivateProfileInt(L"Switches", L"EnableResetTransparency", 1, CONFIG_FILE);
-    g_enableSendToBottom = GetPrivateProfileInt(L"Switches", L"EnableSendToBottom", 0, CONFIG_FILE);
+    g_enableTransparencyUp = GetPrivateProfileInt(L"Switches", L"EnableTransparencyUp", 0, g_configPath);
+    g_enableTransparencyDown = GetPrivateProfileInt(L"Switches", L"EnableTransparencyDown", 0, g_configPath);
+    g_enableCenter = GetPrivateProfileInt(L"Switches", L"EnableCenter", 1, g_configPath);
+    g_enableShake = GetPrivateProfileInt(L"Switches", L"EnableShake", 0, g_configPath);
+    g_enableResetTransparency = GetPrivateProfileInt(L"Switches", L"EnableResetTransparency", 1, g_configPath);
+    g_enableSendToBottom = GetPrivateProfileInt(L"Switches", L"EnableSendToBottom", 0, g_configPath);
 
     // 限制透明度步长范围
     if (g_transparencyStep < 1) g_transparencyStep = 1;
@@ -1963,7 +1990,7 @@ void LoadConfig()
 
     // 首次运行（配置文件还不存在）：把上面这套默认值落盘，
     // 这样 ShowStartupMessage 等设置从第一次启动起就是持久化的
-    if (GetFileAttributes(CONFIG_FILE) == INVALID_FILE_ATTRIBUTES) {
+    if (GetFileAttributes(g_configPath) == INVALID_FILE_ATTRIBUTES) {
         SaveConfig();
     }
 }
@@ -1975,59 +2002,59 @@ void SaveConfig()
 
     // 保存透明度步长
     swprintf(value, 32, L"%d", g_transparencyStep);
-    WritePrivateProfileString(L"Settings", L"TransparencyStep", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"TransparencyStep", value, g_configPath);
 
     // 保存启动提示开关
     swprintf(value, 32, L"%d", g_showStartupMessage);
-    WritePrivateProfileString(L"Settings", L"ShowStartupMessage", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"ShowStartupMessage", value, g_configPath);
 
     // 保存开机自启延迟
     swprintf(value, 32, L"%d", g_autoStartDelay);
-    WritePrivateProfileString(L"Settings", L"AutoStartDelay", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"AutoStartDelay", value, g_configPath);
 
     // 保存“居中时忽略任务栏”
     swprintf(value, 32, L"%d", g_centerIgnoreTaskbar);
-    WritePrivateProfileString(L"Settings", L"CenterIgnoreTaskbar", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"CenterIgnoreTaskbar", value, g_configPath);
 
     // 保存热键配置
     swprintf(value, 32, L"%d", g_transparencyUpModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_transparencyUpKey);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_transparencyDownModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_transparencyDownKey);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_centerModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"CenterModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"CenterModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_centerKey);
-    WritePrivateProfileString(L"Hotkeys", L"CenterKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"CenterKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_shakeModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"ShakeModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ShakeModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_shakeKey);
-    WritePrivateProfileString(L"Hotkeys", L"ShakeKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ShakeKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_resetTransparencyModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_resetTransparencyKey);
-    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_sendToBottomModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"SendToBottomModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"SendToBottomModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_sendToBottomKey);
-    WritePrivateProfileString(L"Hotkeys", L"SendToBottomKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"SendToBottomKey", value, g_configPath);
 
     // 保存热键开关状态
     swprintf(value, 32, L"%d", g_enableTransparencyUp ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableTransparencyUp", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableTransparencyUp", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableTransparencyDown ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableTransparencyDown", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableTransparencyDown", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableCenter ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableCenter", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableCenter", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableShake ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableShake", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableShake", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableResetTransparency ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableResetTransparency", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableResetTransparency", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableSendToBottom ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableSendToBottom", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableSendToBottom", value, g_configPath);
 }
 
 // 获取修饰键名称（使用完整全称，避免缩写导致显示不完整或歧义）
