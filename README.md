@@ -26,6 +26,7 @@ WinClearFocus 基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2
 - **一键重置透明度** — 调"没了"也不用慌，一个热键立刻恢复不透明。
 - **窗口抖动** — 让当前窗口"抖一抖"，提醒走神的自己。
 - **窗口置底** — 把当前窗口压到所有窗口最底层（摸鱼神器）。
+- **快捷调整窗口大小** — 一个热键把当前窗口缩放成屏幕的百分比或指定宽高，自动居中；拖动设置里的滑块时有**虚线预览框**实时框出目标区域。
 - **系统托盘 + 全局热键** — 常驻托盘，热键全局响应，设置自动保存。
 
 ## 🚀 进阶功能
@@ -56,18 +57,33 @@ WinClearFocus.exe -silent
 - 关闭自启时两处都会清理，失败会给出明确提示；
 - 延迟通过 `schtasks /delay 0000:15` 传入（分:秒格式）。
 
+### 窗口大小调整
+
+`Alt + Shift + R` 把当前窗口调整为：
+
+- **比例缩放**（默认 70%）—— 按窗口所在显示器的**工作区**等比缩放，可勾选"缩放时忽略任务栏"；
+- **固定尺寸**（默认 1280 × 720）—— 输入 100–8000 px 的宽高；若超出当前显示器，会**等比缩小直到放得下**；
+- 两种模式都默认**调整后居中**（取消勾选则保持原左上角位置不变）；
+- 最大化 / 全屏窗口会被自动跳过。
+
+在设置界面拖动滑块或修改宽高时，会在对应显示器上弹出**虚线预览框**（置顶、鼠标穿透），停止操作 0.5 秒后自动消失。
+
+> **为什么用快捷键改过的尺寸，程序重启后不保留？**
+> 窗口尺寸通常由目标程序自己"记住"：它收到鼠标拖拽 / 最大化产生的 `WM_MOVE` / `WM_SIZE` 时，会把当前尺寸写回自己的注册表或配置文件。我们通过 `SetWindowPos` 从外部修改属于"临时改动"，很多程序不会把它当成需要持久化的状态。这属于目标程序自身的机制，本工具无法干预其他程序的配置。
+
 ## ⌨️ 默认快捷键
 
 | 功能 | 默认快捷键 | 默认启用 |
 | --- | --- | --- |
 | 窗口居中 | `Alt + Shift + C` | ✅ |
+| 窗口大小调整 | `Alt + Shift + R` | ❌ |
 | 透明度增加 | `Alt + Shift + →` | ❌ |
 | 透明度减少 | `Alt + Shift + ←` | ❌ |
-| 重置透明度 | `Alt + Shift + ↑` | ✅ |
+| 重置透明度 | `Alt + Shift + ↑` | ❌ |
 | 窗口抖动 | `Alt + Shift + ↓` | ❌ |
 | 窗口置底 | `Alt + Shift + Z` | ❌ |
 
-> 热键均可自定义：设置界面点击对应"设置"按钮后直接按下新的组合键即可。为避免误触，透明度调整、抖动、置底默认关闭。
+> 热键均可自定义：设置界面点击对应"设置"按钮后直接按下新的组合键即可。**开箱即用只启用"窗口居中"**，其余功能按需在设置里勾选"启用"（保存后生效），避免误触。
 
 ## 🖱️ 使用方法
 
@@ -79,32 +95,39 @@ WinClearFocus.exe -silent
 
 ### 环境要求
 
-- Windows 10 / 11
-- CMake 3.20+（开发时使用 4.3）
-- MinGW-w64（g++ 13+）或 Visual Studio 2022
-- 系统库：`user32`、`shell32`、`comctl32`、`gdiplus`、`dwmapi`（均由 CMake 自动链接）
+| 项目 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10 / 11 |
+| CMake | 3.20+（开发时使用 4.3） |
+| 构建工具 | **Ninja**（推荐，比 MinGW Makefiles 更快） |
+| 编译器 | **强烈推荐 [MSYS2](https://www.msys2.org/) UCRT64 工具链**（自带完整的静态库，可产出无 DLL 依赖的单文件 exe） |
 
-### 使用 MinGW 构建
+> ⚠️ 不建议使用 CLion 自带的 MinGW 15.2：它的静态 `libwinpthread.a` 混用了 UCRT 符号，开启 `-static` 后会在链接阶段报 `__intrinsic_setjmpex` / `__ms_vsnprintf` 未定义。请改用 MSYS2 UCRT64。
+>
+> 由于链接参数（`-static`、`-static-libstdc++` 等）是 GCC 专有选项，本项目不再提供 MSVC（Visual Studio）构建方式。
 
-```bash
-cmake -S . -B build -G "MinGW Makefiles"
-cmake --build build -j
-```
-
-生成 `build/WinClearFocus.exe`，无外部 DLL 依赖。
-
-### 使用 Visual Studio 构建
+### 使用 MSYS2 UCRT64 + Ninja 构建
 
 ```bash
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
+cmake -S . -B build -G Ninja \
+      -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe \
+      -DCMAKE_RC_COMPILER=C:/msys64/ucrt64/bin/windres.exe
+cmake --build build
 ```
+
+在 CLion 中更简单：`Settings → Build, Execution, Deployment → Toolchains` 新增一个 MinGW 工具链，Toolset 选择 `C:\msys64\ucrt64`；再到 `CMake` 设置里把当前 Profile 的 Toolchain 换成它，Reload 即可。
+
+### 静态编译说明
+
+本项目在 `CMakeLists.txt` 中默认开启了 `-static -static-libgcc -static-libstdc++`：**生成的 exe 文件自带 C++ 运行库与 winpthread，无需任何 DLL 即可在纯净 Windows 环境下双击运行**，不会再出现缺少 `libgcc_s_seh-1.dll`、`libstdc++-6.dll` 的问题。
+
+产物位于 `build/WinClearFocus.exe`，体积约 800 KB（已包含多尺寸图标与内嵌 manifest）。
 
 > 可执行文件内嵌了 **comctl32 v6 manifest**，因此复选框、输入框、滑杆等原生控件会自动使用系统视觉样式；窗口圆角依赖 Windows 11 的 DWM，Win10 上会退化为直角（不影响功能）。
 
 ## 📝 配置文件
 
-程序运行目录下的 `config.ini` 保存全部设置，首次运行会自动生成。也可以手工编辑后再启动。
+程序所在目录（与 exe 同级）下的 `config.ini` 保存全部设置，首次运行会自动生成；无论从哪个工作目录启动，读写都指向 exe 同级的配置文件。也可以手工编辑后再启动。
 
 ### `[Settings]`
 
@@ -114,6 +137,12 @@ cmake --build build --config Release
 | `ShowStartupMessage` | `1` | 启动时是否弹提示框（0 = 静默） |
 | `CenterIgnoreTaskbar` | `1` | 居中时是否忽略任务栏（使用工作区） |
 | `AutoStartDelay` | `0` | 开机自启延迟秒数（0 / 5 / 10 / 15 / 30，仅管理员有效） |
+| `RegulateMode` | `0` | 窗口大小调整模式：`0` = 百分比缩放，`1` = 固定宽高 |
+| `RegulateScale` | `70` | 百分比模式缩放比例（30–90，步长 5） |
+| `RegulateIgnoreTaskbar` | `1` | 百分比模式是否忽略任务栏（1 = 按工作区缩放） |
+| `RegulateWidth` | `1280` | 固定模式宽度（100–8000 px） |
+| `RegulateHeight` | `720` | 固定模式高度（100–8000 px） |
+| `RegulateCenter` | `1` | 调整后是否居中（0 = 保持原左上角不动） |
 
 ### `[Hotkeys]`
 
@@ -127,6 +156,7 @@ cmake --build build --config Release
 | `CenterModifiers` / `CenterKey` | 窗口居中 |
 | `ShakeModifiers` / `ShakeKey` | 窗口抖动 |
 | `SendToBottomModifiers` / `SendToBottomKey` | 窗口置底 |
+| `RegulateModifiers` / `RegulateKey` | 窗口大小调整（默认 `5` / `82` = `R`） |
 
 修饰键掩码：`MOD_ALT = 1`、`MOD_CONTROL = 2`、`MOD_SHIFT = 4`、`MOD_WIN = 8`，可相加（例如 `5` = Alt + Shift）。
 按键使用 Windows 虚拟键码，例如 `C = 67`、`Z = 90`、`VK_UP = 38`、`VK_RIGHT = 39`。
@@ -137,10 +167,11 @@ cmake --build build --config Release
 | --- | --- | --- |
 | `EnableTransparencyUp` | `0` | 启用透明度增加 |
 | `EnableTransparencyDown` | `0` | 启用透明度减少 |
-| `EnableResetTransparency` | `1` | 启用重置透明度 |
+| `EnableResetTransparency` | `0` | 启用重置透明度 |
 | `EnableCenter` | `1` | 启用窗口居中 |
 | `EnableShake` | `0` | 启用窗口抖动 |
 | `EnableSendToBottom` | `0` | 启用窗口置底 |
+| `EnableRegulate` | `0` | 启用窗口大小调整 |
 
 ## 📁 项目结构
 
