@@ -17,7 +17,13 @@ WinClearFocus 基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2
 
 ## 📸 界面预览
 
-<p align="center"><img src="docs/screenshot.png" width="600" alt="设置界面"></p>
+<p align="center">
+  <img src="docs/settings-percent.png" width="320" alt="比例缩放模式">
+  &nbsp;&nbsp;
+  <img src="docs/settings-fixed.png" width="320" alt="固定尺寸模式">
+</p>
+
+<p align="center"><sub>设置界面 · 比例缩放 / 固定尺寸</sub></p>
 
 ## ✨ 核心特性
 
