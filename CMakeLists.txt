@@ -23,5 +23,13 @@ add_executable(WinClearFocus WIN32
 set_source_files_properties(WinClearFocus/WinClearFocus.rc PROPERTIES
         OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/WinClearFocus/WinClearFocus.manifest")
 
+# 静态链接 GCC 运行库与 winpthread，生成单文件绿色 exe：
+# 否则在没装 MinGW 的机器上会缺少 libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll
+target_link_options(WinClearFocus PRIVATE
+        -static
+        -static-libgcc
+        -static-libstdc++
+)
+
 # 链接 Windows 系统库
 target_link_libraries(WinClearFocus PRIVATE user32 shell32 comctl32 gdiplus dwmapi)
