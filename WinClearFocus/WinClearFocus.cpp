@@ -1,4 +1,4 @@
-﻿#include <windows.h>
+#include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>       // IsUserAnAdmin：判断当前进程是否以管理员运行
 #include <commctrl.h>
@@ -26,9 +26,9 @@
 #define ID_HOTKEY_SHAKE_WINDOW 4
 #define ID_HOTKEY_RESET_TRANSPARENCY 5
 #define ID_HOTKEY_SEND_TO_BOTTOM 6
-#define CONFIG_FILE L".\\config.ini"
+#define ID_HOTKEY_REGULATE 7
 #define MAX_PATH_LEN 260
-#define APP_VERSION L"v1.0.0"
+#define APP_VERSION L"v1.1.0"
 
 // 控件ID
 #define IDC_TRANSPARENCY_UP_BUTTON 2001
@@ -57,6 +57,18 @@
 #define IDC_SEND_TO_BOTTOM_BUTTON 2024
 #define IDC_AUTOSTART 2025
 #define IDC_AUTOSTART_DELAY 2026
+#define IDC_REGULATE_ENABLE 2027
+#define IDC_REGULATE_DISPLAY 2028
+#define IDC_REGULATE_BUTTON 2029
+#define IDC_REGULATE_MODE_PERCENT 2030
+#define IDC_REGULATE_MODE_FIXED 2031
+#define IDC_REGULATE_SLIDER 2032
+#define IDC_REGULATE_SCALE_LABEL 2033
+#define IDC_REGULATE_IGNORE_TASKBAR 2034
+#define IDC_REGULATE_WIDTH_EDIT 2035
+#define IDC_REGULATE_HEIGHT_EDIT 2036
+#define IDC_REGULATE_HINT 2037
+#define IDC_REGULATE_CENTER 2038
 
 // 全局变量
 HWND g_hMainWnd = NULL;           // 主窗口句柄
@@ -66,6 +78,11 @@ int g_transparencyStep = 10;      // 透明度调整步长（默认10%）
 
 // 启动提示开关：1=启动后弹提示框，0=静默进托盘（对应 config.ini 的 [Settings] ShowStartupMessage）
 int g_showStartupMessage = 1;
+
+// 配置文件绝对路径：exe 所在目录下的 config.ini。
+// 不能用相对路径 ".\config.ini"：计划任务在登录时以管理员身份启动，
+// 工作目录往往是 C:\Windows\System32，会导致配置读取/保存全部失效。
+wchar_t g_configPath[MAX_PATH] = { 0 };
 
 // 开机自启的延迟秒数（0/5/10/15/30，0 = 不延迟）
 int g_autoStartDelay = 0;
@@ -99,15 +116,28 @@ UINT g_shakeModifiers = MOD_ALT | MOD_SHIFT;             // 窗口抖动修饰�
 UINT g_shakeKey = VK_DOWN;                               // 窗口抖动按键
 BOOL g_enableShake = FALSE;                              // 是否启用窗口抖动功能
 
-// 重置透明度热键设置（默认 Alt+Shift+Up，默认启用）—— 用来救回被调到近乎全透明的窗口
+// 重置透明度热键设置（默认 Alt+Shift+Up，默认不启用）—— 用来救回被调到近乎全透明的窗口
 UINT g_resetTransparencyModifiers = MOD_ALT | MOD_SHIFT; // 重置透明度修饰键
 UINT g_resetTransparencyKey = VK_UP;                     // 重置透明度按键
-BOOL g_enableResetTransparency = TRUE;                   // 是否启用重置透明度功能
+BOOL g_enableResetTransparency = FALSE;                  // 是否启用重置透明度功能
 
 // 窗口置底热键设置（默认 Alt+Shift+Z，默认不启用）
 UINT g_sendToBottomModifiers = MOD_ALT | MOD_SHIFT;      // 窗口置底修饰键
 UINT g_sendToBottomKey = 'Z';                            // 窗口置底按键
 BOOL g_enableSendToBottom = FALSE;                       // 是否启用窗口置底功能
+
+// 窗口大小调整（v1.1.0）
+UINT g_regulateModifiers = MOD_ALT | MOD_SHIFT;          // 窗口大小调整修饰键
+UINT g_regulateKey = 'R';                                // 窗口大小调整按键
+BOOL g_enableRegulate = FALSE;                           // 是否启用窗口大小调整
+int g_regulateMode = 0;                                  // 0=百分比缩放，1=固定宽高
+int g_regulateScale = 70;                                // 百分比模式缩放比例（30~90）
+int g_regulateIgnoreTaskbar = 1;                         // 百分比模式是否忽略任务栏
+int g_regulateWidth = 1280;                              // 固定模式宽度
+int g_regulateHeight = 720;                              // 固定模式高度
+int g_regulateCenter = 1;                                // 调整后是否居中
+
+HWND g_hPreviewWnd = NULL;                               // 虚线预览框（分层透明窗口）
 
 // 热键监听状态
 BOOL g_isListeningHotkey = FALSE;     // 是否正在监听热键输入
@@ -130,6 +160,7 @@ void CenterWindow();                              // 将窗口居中显示
 void ShakeWindow();                               // 窗口抖动效果
 void ResetWindowTransparency();                   // 重置窗口透明度（恢复不透明）
 void SendWindowToBottom();                        // 将窗口沉到最底层
+void RegulateWindowSize();                        // 按当前设置调整窗口大小
 void LoadConfig();                                // 从配置文件加载设置
 void SaveConfig();                                // 保存设置到配置文件
 HWND GetTopMostWindow();                          // 获取最上层窗口
@@ -193,9 +224,32 @@ void RestartAsAdmin()
     PostQuitMessage(0);
 }
 
+// 计算配置文件绝对路径：<exe 所在目录>\config.ini
+static void GetConfigPath()
+{
+    wchar_t exePath[MAX_PATH] = { 0 };
+    if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) {
+        // 极端情况下退回当前目录
+        wcscpy_s(g_configPath, MAX_PATH, L"config.ini");
+        return;
+    }
+
+    wchar_t* slash = wcsrchr(exePath, L'\\');
+    if (slash) {
+        *(slash + 1) = L'\0';   // 保留目录部分（含末尾反斜杠）
+    } else {
+        exePath[0] = L'\0';
+    }
+
+    swprintf_s(g_configPath, MAX_PATH, L"%sconfig.ini", exePath);
+}
+
 // 主函数
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow)
 {
+    // 最先确定配置文件路径：后面 LoadConfig() 和所有保存都依赖它
+    GetConfigPath();
+
     // 初始化通用控件（Win11 视觉样式由 exe 内嵌的 comctl32 v6 manifest 启用）
     INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_WIN95_CLASSES | ICC_STANDARD_CLASSES };
     InitCommonControlsEx(&icc);
@@ -258,7 +312,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // 显示启动提示：命令行 -silent 绝对静默；否则由 config.ini 的 ShowStartupMessage 决定
     if (!forceSilent && g_showStartupMessage != 0) {
         wchar_t startupMsg[600];
-        swprintf_s(startupMsg, 600, L"WinClearFocus %s 已启动！\n\n默认热键：\n- Alt+Shift+C 窗口居中\n- Alt+Shift+↓ 窗口抖动（默认关闭）\n- Alt+Shift+←/→ 调整窗口透明度（默认关闭）\n- Alt+Shift+↑ 重置透明度\n- Alt+Shift+Z 窗口置底（默认关闭）\n\n右键点击托盘图标进行设置\n\n提示：命令行加 -silent 可静默启动", APP_VERSION);
+        swprintf_s(startupMsg, 600, L"WinClearFocus %s 已启动！\n\n默认热键：\n- Alt+Shift+C 窗口居中\n- Alt+Shift+↓ 窗口抖动（默认关闭）\n- Alt+Shift+←/→ 调整窗口透明度（默认关闭）\n- Alt+Shift+↑ 重置透明度（默认关闭）\n- Alt+Shift+Z 窗口置底（默认关闭）\n- Alt+Shift+R 调整窗口大小（默认关闭）\n\n右键点击托盘图标进行设置\n\n提示：命令行加 -silent 可静默启动", APP_VERSION);
         MessageBox(NULL, startupMsg, L"WinClearFocus 启动成功", MB_OK | MB_ICONINFORMATION);
     }
 
@@ -306,6 +360,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
             break;
         case ID_HOTKEY_SEND_TO_BOTTOM:
             SendWindowToBottom(); // 窗口置底
+            break;
+        case ID_HOTKEY_REGULATE:
+            RegulateWindowSize(); // 调整窗口大小
             break;
         }
         break;
@@ -573,7 +630,7 @@ static void UpdateAutoStartEnabledState(HWND check, HWND combo)
 
 static const int kTitleBarHeight = 36;
 static const int kSettingsWidth  = 460;
-static const int kSettingsHeight = 710;          // 内容 + 自绘标题栏 + 加大后的块间距
+static const int kSettingsHeight = 720;          // 紧凑排版，适配 1366x768
 static const COLORREF kSettingsBg = RGB(243, 243, 243);
 
 static bool g_hoverClose = false;
@@ -705,6 +762,272 @@ static void PaintSettingsWindow(HWND hwnd)
     EndPaint(hwnd, &ps);
 }
 
+// ==================== 窗口大小调整（v1.1.0） ====================
+
+static int ClampInt(int value, int lo, int hi)
+{
+    if (value < lo) return lo;
+    if (value > hi) return hi;
+    return value;
+}
+
+// 目标窗口是否最大化或全屏（全屏判定：窗口矩形几乎等于显示器矩形）
+static bool IsMaximizedOrFullscreen(HWND hwnd)
+{
+    if (IsZoomed(hwnd)) {
+        return true;
+    }
+
+    HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { 0 };
+    mi.cbSize = sizeof(MONITORINFO);
+    if (!hMon || !GetMonitorInfoW(hMon, &mi)) {
+        return false;
+    }
+
+    RECT wr;
+    if (!GetWindowRect(hwnd, &wr)) {
+        return false;
+    }
+
+    const RECT& m = mi.rcMonitor;
+    const int tol = 2;
+    return abs(wr.left - m.left) <= tol && abs(wr.top - m.top) <= tol &&
+           abs(wr.right - m.right) <= tol && abs(wr.bottom - m.bottom) <= tol;
+}
+
+// 依据当前设置计算目标矩形（屏幕坐标）；hwnd 只用于确定所在显示器
+static bool ComputeRegulatedRect(HWND hwnd, RECT* out)
+{
+    HMONITOR hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { 0 };
+    mi.cbSize = sizeof(MONITORINFO);
+    if (!hMon || !GetMonitorInfoW(hMon, &mi)) {
+        return false;
+    }
+
+    // 百分比模式看用户是否勾选“忽略任务栏”；固定模式始终以工作区为准
+    const bool useWorkArea = (g_regulateMode == 0) ? (g_regulateIgnoreTaskbar != 0) : true;
+    const RECT area = useWorkArea ? mi.rcWork : mi.rcMonitor;
+    const int aw = area.right - area.left;
+    const int ah = area.bottom - area.top;
+    if (aw <= 0 || ah <= 0) {
+        return false;
+    }
+
+    int w, h;
+    if (g_regulateMode == 0) {
+        const int scale = ClampInt(g_regulateScale, 30, 90);
+        w = aw * scale / 100;
+        h = ah * scale / 100;
+    } else {
+        w = ClampInt(g_regulateWidth, 100, 8000);
+        h = ClampInt(g_regulateHeight, 100, 8000);
+        // 固定尺寸超出当前工作区时，等比缩小到刚好放得下
+        if (w > aw || h > ah) {
+            const double fx = (double)aw / (double)w;
+            const double fy = (double)ah / (double)h;
+            const double f = (fx < fy) ? fx : fy;
+            w = (int)(w * f);
+            h = (int)(h * f);
+        }
+    }
+
+    w = ClampInt(w, 100, 8000);
+    h = ClampInt(h, 100, 8000);
+
+    int x, y;
+    if (g_regulateCenter) {
+        // 居中：以工作区中心摆放
+        x = area.left + (aw - w) / 2;
+        y = area.top + (ah - h) / 2;
+    } else {
+        // 不居中：尺寸变化但保持原窗口左上角不动
+        RECT wr;
+        GetWindowRect(hwnd, &wr);
+        x = wr.left;
+        y = wr.top;
+    }
+    out->left = x;
+    out->top = y;
+    out->right = x + w;
+    out->bottom = y + h;
+    return true;
+}
+
+// 实际调整当前前台窗口
+void RegulateWindowSize()
+{
+    HWND hwnd = GetTopMostWindow();
+    if (!hwnd || hwnd == g_hMainWnd || hwnd == g_hSettingsWnd || hwnd == g_hPreviewWnd) {
+        return;
+    }
+    if (IsMaximizedOrFullscreen(hwnd)) {
+        return;   // 最大化 / 全屏窗口直接忽略
+    }
+
+    RECT target;
+    if (!ComputeRegulatedRect(hwnd, &target)) {
+        return;
+    }
+
+    SetWindowPos(hwnd, NULL, target.left, target.top,
+                 target.right - target.left, target.bottom - target.top,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// ---------- 虚线预览框（分层 + 色键透明 + 鼠标穿透） ----------
+
+static const COLORREF kPreviewKey = RGB(1, 2, 3);   // 该颜色区域完全透明且鼠标穿透
+static RECT g_previewMonitorRect = { 0, 0, 0, 0 };
+static RECT g_previewTargetRect = { 0, 0, 0, 0 };
+
+static LRESULT CALLBACK PreviewProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
+{
+    switch (uMsg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT:
+    {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hwnd, &ps);
+
+        RECT rc;
+        GetClientRect(hwnd, &rc);
+        HBRUSH keyBrush = CreateSolidBrush(kPreviewKey);
+        FillRect(hdc, &rc, keyBrush);
+        DeleteObject(keyBrush);
+
+        RECT r;
+        r.left = g_previewTargetRect.left - g_previewMonitorRect.left;
+        r.top = g_previewTargetRect.top - g_previewMonitorRect.top;
+        r.right = g_previewTargetRect.right - g_previewMonitorRect.left;
+        r.bottom = g_previewTargetRect.bottom - g_previewMonitorRect.top;
+
+        HPEN pen = CreatePen(PS_DASH, 1, RGB(0, 103, 192));
+        HGDIOBJ oldPen = SelectObject(hdc, pen);
+        HGDIOBJ oldBrush = SelectObject(hdc, GetStockObject(NULL_BRUSH));
+        SetBkMode(hdc, TRANSPARENT);
+
+        // 画两圈细虚线，视觉上接近 2px
+        Rectangle(hdc, r.left, r.top, r.right, r.bottom);
+        Rectangle(hdc, r.left + 1, r.top + 1, r.right - 1, r.bottom - 1);
+
+        SelectObject(hdc, oldBrush);
+        SelectObject(hdc, oldPen);
+        DeleteObject(pen);
+
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    }
+    return DefWindowProc(hwnd, uMsg, wParam, lParam);
+}
+
+static void EnsurePreviewWindow()
+{
+    if (g_hPreviewWnd) {
+        return;
+    }
+
+    static bool classRegistered = false;
+    if (!classRegistered) {
+        WNDCLASS wc = { 0 };
+        wc.lpfnWndProc = PreviewProc;
+        wc.hInstance = GetModuleHandle(NULL);
+        wc.lpszClassName = L"WinClearFocusPreview";
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        RegisterClass(&wc);
+        classRegistered = true;
+    }
+
+    g_hPreviewWnd = CreateWindowExW(
+        WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST,
+        L"WinClearFocusPreview", L"", WS_POPUP,
+        0, 0, 10, 10, NULL, NULL, GetModuleHandle(NULL), NULL);
+    if (g_hPreviewWnd) {
+        SetLayeredWindowAttributes(g_hPreviewWnd, kPreviewKey, 0, LWA_COLORKEY);
+    }
+}
+
+// 在设置窗口所在显示器上显示虚线预览；500ms 后由设置窗口的 WM_TIMER 收起
+static void ShowRegulatePreview(HWND hSettings)
+{
+    if (!hSettings || !IsWindowVisible(hSettings)) {
+        return;   // 窗口还在 WM_CREATE 阶段时不弹预览
+    }
+    EnsurePreviewWindow();
+    if (!g_hPreviewWnd) {
+        return;
+    }
+
+    HMONITOR hMon = MonitorFromWindow(hSettings, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = { 0 };
+    mi.cbSize = sizeof(MONITORINFO);
+    if (!hMon || !GetMonitorInfoW(hMon, &mi)) {
+        return;
+    }
+
+    RECT target;
+    if (!ComputeRegulatedRect(hSettings, &target)) {
+        return;
+    }
+
+    g_previewMonitorRect = mi.rcMonitor;
+    g_previewTargetRect = target;
+
+    SetWindowPos(g_hPreviewWnd, HWND_TOPMOST,
+                 mi.rcMonitor.left, mi.rcMonitor.top,
+                 mi.rcMonitor.right - mi.rcMonitor.left,
+                 mi.rcMonitor.bottom - mi.rcMonitor.top,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(g_hPreviewWnd, NULL, TRUE);
+
+    SetTimer(hSettings, 1, 500, NULL);
+}
+
+static void HideRegulatePreview()
+{
+    if (g_hPreviewWnd) {
+        ShowWindow(g_hPreviewWnd, SW_HIDE);
+    }
+}
+
+// 更新“当前：W × H px”标签
+static void UpdateRegulateScaleLabel(HWND hSettings, HWND hLabel)
+{
+    RECT target;
+    if (!hLabel || !hSettings || !ComputeRegulatedRect(hSettings, &target)) {
+        return;
+    }
+    wchar_t text[128];
+    swprintf_s(text, 128, L"当前：%d × %d px", target.right - target.left, target.bottom - target.top);
+    SetWindowTextW(hLabel, text);
+}
+
+// 批量显示/隐藏控件（用于两种调整模式的切换）
+static void SetControlsVisible(HWND* controls, int count, bool visible)
+{
+    for (int i = 0; i < count; ++i) {
+        if (controls[i]) {
+            ShowWindow(controls[i], visible ? SW_SHOW : SW_HIDE);
+        }
+    }
+}
+
+// 读取输入框里的整数，失败时返回 fallback
+static int GetEditInt(HWND hEdit, int fallback)
+{
+    wchar_t buf[32] = { 0 };
+    if (!hEdit || !GetWindowTextW(hEdit, buf, 32)) {
+        return fallback;
+    }
+    if (!buf[0]) {
+        return fallback;
+    }
+    return (int)wcstol(buf, NULL, 10);
+}
+
 // 给设置窗口的所有子控件统一应用字体的回调
 static BOOL CALLBACK SetChildFontProc(HWND child, LPARAM lParam)
 {
@@ -723,6 +1046,13 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     static HWND hResetTransparencyDisplay, hResetTransparencyButton;
     static HWND hSendToBottomEnable, hSendToBottomDisplay, hSendToBottomButton;
     static HWND hAutoStart, hAutoStartDelay;
+    static HWND hRegulateEnable, hRegulateDisplay, hRegulateButton;
+    static HWND hRegulateModePercent, hRegulateModeFixed;
+    static HWND hRegulateSlider, hRegulateScaleLabel, hRegulateIgnoreTaskbar;
+    static HWND hRegulateWidthEdit, hRegulateHeightEdit, hRegulateHint;
+    static HWND hRegulateCenter;
+    static HWND hRegulatePercentCtrls[4] = { 0 };
+    static HWND hRegulateFixedCtrls[6] = { 0 };
     static HWND hPermissionTip = NULL;       // “权限说明”的 Tooltip 窗口
     static HICON hPermissionIcon = NULL;     // 问号图标（自建副本，需要自己销毁）
     static bool permissionIconOwned = false;
@@ -858,7 +1188,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         const int buttonX = 350;      // “设置”按钮
         const int buttonWidth = 60;
 
-        int yPos = 20 + kTitleBarHeight;   // 顶部 36px 留给自绘标题栏
+        int yPos = 10 + kTitleBarHeight;   // 顶部 36px 留给自绘标题栏
         wchar_t keyText[128];
 
         // ============ 第一块：窗口居中 ============
@@ -873,7 +1203,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             hwnd, (HMENU)IDC_CENTER_ENABLE, GetModuleHandle(NULL), NULL);
         SendMessage(hCenterEnable, BM_SETCHECK, g_enableCenter ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        yPos += 28;
+        yPos += 26;
 
         CreateWindow(L"STATIC", L"热键:",
             WS_VISIBLE | WS_CHILD,
@@ -893,43 +1223,9 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_CENTER_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 44;
+        yPos += 38;
 
-        // ============ 第二块：窗口抖动 ============
-        CreateWindow(L"STATIC", L"窗口抖动:",
-            WS_VISIBLE | WS_CHILD,
-            labelX, yPos, labelWidth, 22,
-            hwnd, NULL, GetModuleHandle(NULL), NULL);
-
-        hShakeEnable = CreateWindow(L"BUTTON", L"启用",
-            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-            fieldX, yPos, 60, 22,
-            hwnd, (HMENU)IDC_SHAKE_ENABLE, GetModuleHandle(NULL), NULL);
-        SendMessage(hShakeEnable, BM_SETCHECK, g_enableShake ? BST_CHECKED : BST_UNCHECKED, 0);
-
-        yPos += 28;
-
-        CreateWindow(L"STATIC", L"热键:",
-            WS_VISIBLE | WS_CHILD,
-            labelX, yPos, labelWidth, fieldHeight,
-            hwnd, NULL, GetModuleHandle(NULL), NULL);
-
-        hShakeDisplay = CreateWindow(L"EDIT", L"",
-            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
-            fieldX, yPos, fieldWidth, fieldHeight,
-            hwnd, (HMENU)IDC_SHAKE_DISPLAY, GetModuleHandle(NULL), NULL);
-        // 设置当前热键显示
-        swprintf_s(keyText, 128, L"%s+%s", GetModifierName(g_shakeModifiers), GetKeyName(g_shakeKey));
-        SetWindowText(hShakeDisplay, keyText);
-
-        hShakeButton = CreateWindow(L"BUTTON", L"设置",
-            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
-            buttonX, yPos, buttonWidth, fieldHeight,
-            hwnd, (HMENU)IDC_SHAKE_BUTTON, GetModuleHandle(NULL), NULL);
-
-        yPos += 44;
-
-        // ============ 第三块：窗口置底 ============
+        // ============ 第二块：窗口置底 ============
         CreateWindow(L"STATIC", L"窗口置底:",
             WS_VISIBLE | WS_CHILD,
             labelX, yPos, labelWidth, 22,
@@ -941,7 +1237,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             hwnd, (HMENU)IDC_SEND_TO_BOTTOM_ENABLE, GetModuleHandle(NULL), NULL);
         SendMessage(hSendToBottomEnable, BM_SETCHECK, g_enableSendToBottom ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        yPos += 28;
+        yPos += 26;
 
         CreateWindow(L"STATIC", L"热键:",
             WS_VISIBLE | WS_CHILD,
@@ -961,9 +1257,166 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_SEND_TO_BOTTOM_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 44;
+        yPos += 38;
 
-        // ============ 第四块：透明度控制 ============
+        // ============ 第三块：窗口抖动 ============
+        CreateWindow(L"STATIC", L"窗口抖动:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos, labelWidth, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hShakeEnable = CreateWindow(L"BUTTON", L"启用",
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            fieldX, yPos, 60, 22,
+            hwnd, (HMENU)IDC_SHAKE_ENABLE, GetModuleHandle(NULL), NULL);
+        SendMessage(hShakeEnable, BM_SETCHECK, g_enableShake ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        yPos += 26;
+
+        CreateWindow(L"STATIC", L"热键:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos, labelWidth, fieldHeight,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hShakeDisplay = CreateWindow(L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
+            fieldX, yPos, fieldWidth, fieldHeight,
+            hwnd, (HMENU)IDC_SHAKE_DISPLAY, GetModuleHandle(NULL), NULL);
+        // 设置当前热键显示
+        swprintf_s(keyText, 128, L"%s+%s", GetModifierName(g_shakeModifiers), GetKeyName(g_shakeKey));
+        SetWindowText(hShakeDisplay, keyText);
+
+        hShakeButton = CreateWindow(L"BUTTON", L"设置",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            buttonX, yPos, buttonWidth, fieldHeight,
+            hwnd, (HMENU)IDC_SHAKE_BUTTON, GetModuleHandle(NULL), NULL);
+
+        yPos += 38;
+
+        // ============ 第四块：窗口大小调整 ============
+        CreateWindow(L"STATIC", L"窗口大小调整:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos, 120, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hRegulateEnable = CreateWindow(L"BUTTON", L"启用",
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            fieldX, yPos, 60, 22,
+            hwnd, (HMENU)IDC_REGULATE_ENABLE, GetModuleHandle(NULL), NULL);
+        SendMessage(hRegulateEnable, BM_SETCHECK, g_enableRegulate ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        yPos += 26;
+
+        CreateWindow(L"STATIC", L"热键:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos, labelWidth, fieldHeight,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hRegulateDisplay = CreateWindow(L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_AUTOHSCROLL | ES_READONLY,
+            fieldX, yPos, fieldWidth, fieldHeight,
+            hwnd, (HMENU)IDC_REGULATE_DISPLAY, GetModuleHandle(NULL), NULL);
+        // 设置当前热键显示
+        swprintf_s(keyText, 128, L"%s+%s", GetModifierName(g_regulateModifiers), GetKeyName(g_regulateKey));
+        SetWindowText(hRegulateDisplay, keyText);
+
+        hRegulateButton = CreateWindow(L"BUTTON", L"设置",
+            WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+            buttonX, yPos, buttonWidth, fieldHeight,
+            hwnd, (HMENU)IDC_REGULATE_BUTTON, GetModuleHandle(NULL), NULL);
+
+        yPos += 28;
+
+        hRegulateModePercent = CreateWindow(L"BUTTON", L"比例缩放",
+            WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON | WS_GROUP,
+            fieldX, yPos, 90, 22,
+            hwnd, (HMENU)IDC_REGULATE_MODE_PERCENT, GetModuleHandle(NULL), NULL);
+        hRegulateModeFixed = CreateWindow(L"BUTTON", L"固定尺寸",
+            WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
+            fieldX + 105, yPos, 90, 22,
+            hwnd, (HMENU)IDC_REGULATE_MODE_FIXED, GetModuleHandle(NULL), NULL);
+
+        hRegulateCenter = CreateWindow(L"BUTTON", L"调整后居中",
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            fieldX + 200, yPos, 120, 22,
+            hwnd, (HMENU)IDC_REGULATE_CENTER, GetModuleHandle(NULL), NULL);
+        SendMessage(hRegulateCenter, BM_SETCHECK, g_regulateCenter ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessage(hRegulateModePercent, BM_SETCHECK, g_regulateMode == 0 ? BST_CHECKED : BST_UNCHECKED, 0);
+        SendMessage(hRegulateModeFixed, BM_SETCHECK, g_regulateMode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        yPos += 30;
+
+        // ---- 比例缩放模式 ----
+        hRegulatePercentCtrls[0] = CreateWindow(L"STATIC", L"缩放比例:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos + 4, 85, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hRegulatePercentCtrls[1] = hRegulateSlider = CreateWindow(TRACKBAR_CLASS, L"",
+            WS_VISIBLE | WS_CHILD | TBS_HORZ | TBS_AUTOTICKS,
+            fieldX - 10, yPos, 200, 30,
+            hwnd, (HMENU)IDC_REGULATE_SLIDER, GetModuleHandle(NULL), NULL);
+        SendMessage(hRegulateSlider, TBM_SETRANGE, TRUE, MAKELONG(30, 90));
+        SendMessage(hRegulateSlider, TBM_SETPOS, TRUE, ClampInt(g_regulateScale, 30, 90));
+        SendMessage(hRegulateSlider, TBM_SETTICFREQ, 10, 0);
+
+        hRegulatePercentCtrls[2] = hRegulateScaleLabel = CreateWindow(L"STATIC", L"",
+            WS_VISIBLE | WS_CHILD,
+            fieldX + 195, yPos + 6, 125, 22,
+            hwnd, (HMENU)IDC_REGULATE_SCALE_LABEL, GetModuleHandle(NULL), NULL);
+
+        hRegulatePercentCtrls[3] = hRegulateIgnoreTaskbar = CreateWindow(L"BUTTON", L"缩放时忽略任务栏",
+            WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
+            fieldX, yPos + 32, 200, 22,
+            hwnd, (HMENU)IDC_REGULATE_IGNORE_TASKBAR, GetModuleHandle(NULL), NULL);
+        SendMessage(hRegulateIgnoreTaskbar, BM_SETCHECK, g_regulateIgnoreTaskbar ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        // ---- 固定尺寸模式 ----
+        hRegulateFixedCtrls[0] = CreateWindow(L"STATIC", L"尺寸:",
+            WS_VISIBLE | WS_CHILD,
+            labelX, yPos + 2, 60, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hRegulateFixedCtrls[1] = hRegulateWidthEdit = CreateWindow(L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
+            fieldX, yPos, 70, 24,
+            hwnd, (HMENU)IDC_REGULATE_WIDTH_EDIT, GetModuleHandle(NULL), NULL);
+
+        hRegulateFixedCtrls[2] = CreateWindow(L"STATIC", L"×",
+            WS_VISIBLE | WS_CHILD,
+            fieldX + 78, yPos + 2, 16, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hRegulateFixedCtrls[3] = hRegulateHeightEdit = CreateWindow(L"EDIT", L"",
+            WS_VISIBLE | WS_CHILD | WS_BORDER | ES_NUMBER | ES_AUTOHSCROLL,
+            fieldX + 98, yPos, 70, 24,
+            hwnd, (HMENU)IDC_REGULATE_HEIGHT_EDIT, GetModuleHandle(NULL), NULL);
+
+        hRegulateFixedCtrls[4] = CreateWindow(L"STATIC", L"px",
+            WS_VISIBLE | WS_CHILD,
+            fieldX + 173, yPos + 2, 26, 22,
+            hwnd, NULL, GetModuleHandle(NULL), NULL);
+
+        hRegulateFixedCtrls[5] = hRegulateHint = CreateWindow(L"STATIC", L"（超出当前显示器时会等比缩小并居中）",
+            WS_VISIBLE | WS_CHILD,
+            fieldX, yPos + 32, 315, 20,
+            hwnd, (HMENU)IDC_REGULATE_HINT, GetModuleHandle(NULL), NULL);
+
+        {
+            wchar_t num[16];
+            swprintf_s(num, 16, L"%d", g_regulateWidth);
+            SetWindowText(hRegulateWidthEdit, num);
+            swprintf_s(num, 16, L"%d", g_regulateHeight);
+            SetWindowText(hRegulateHeightEdit, num);
+        }
+
+        SetControlsVisible(hRegulatePercentCtrls, 4, g_regulateMode == 0);
+        SetControlsVisible(hRegulateFixedCtrls, 6, g_regulateMode == 1);
+        UpdateRegulateScaleLabel(hwnd, hRegulateScaleLabel);
+
+        yPos += 64;
+
+        // ============ 第五块：透明度控制 ============
         CreateWindow(L"STATIC", L"透明度控制:",
             WS_VISIBLE | WS_CHILD,
             labelX, yPos, labelWidth, 22,
@@ -976,7 +1429,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         // 该复选框控制“增加/减少透明度”这对热键；重置透明度是独立的安全网，默认常开
         SendMessage(hTransparencyEnable, BM_SETCHECK, (g_enableTransparencyUp || g_enableTransparencyDown) ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        yPos += 28;
+        yPos += 26;
 
         // 透明度增加热键
         CreateWindow(L"STATIC", L"增加透明度:",
@@ -997,7 +1450,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_TRANSPARENCY_UP_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 28;
+        yPos += 26;
 
         // 透明度减少热键
         CreateWindow(L"STATIC", L"减少透明度:",
@@ -1039,9 +1492,9 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             buttonX, yPos, buttonWidth, fieldHeight,
             hwnd, (HMENU)IDC_RESET_TRANSPARENCY_BUTTON, GetModuleHandle(NULL), NULL);
 
-        yPos += 36;
+        yPos += 28;
 
-        // ============ 第五块：透明度步长 ============
+        // ============ 第六块：透明度步长 ============
         wchar_t stepText[64];
         swprintf_s(stepText, 64, L"透明度步长: %d%%", g_transparencyStep);
         hTransparencyLabel = CreateWindow(L"STATIC", stepText,
@@ -1049,7 +1502,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             labelX, yPos, 220, 22,
             hwnd, (HMENU)IDC_TRANSPARENCY_LABEL, GetModuleHandle(NULL), NULL);
 
-        yPos += 26;
+        yPos += 22;
 
         hTransparencySlider = CreateWindow(TRACKBAR_CLASS, L"",
             WS_VISIBLE | WS_CHILD | TBS_HORZ | TBS_AUTOTICKS,
@@ -1060,44 +1513,39 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         SendMessage(hTransparencySlider, TBM_SETPOS, TRUE, g_transparencyStep);
         SendMessage(hTransparencySlider, TBM_SETTICFREQ, 5, 0);
 
-        yPos += 46;
+        yPos += 40;
 
-        // ============ 第六块：启动提示开关 ============
+        // ============ 第七块：行为开关（启动提示 / 居中选项） ============
         hShowStartupMsg = CreateWindow(L"BUTTON", L"启动成功后显示提示框",
             WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-            labelX, yPos, 240, 22,
+            labelX, yPos, 205, 22,
             hwnd, (HMENU)IDC_SHOW_STARTUP_MSG, GetModuleHandle(NULL), NULL);
         SendMessage(hShowStartupMsg, BM_SETCHECK, g_showStartupMessage ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        yPos += 32;
-
-        // ============ 第七块：窗口居中选项 ============
         hCenterIgnoreTaskbar = CreateWindow(L"BUTTON", L"居中时忽略任务栏",
             WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-            labelX, yPos, 240, 22,
+            labelX + 220, yPos, 205, 22,
             hwnd, (HMENU)IDC_CENTER_IGNORE_TASKBAR, GetModuleHandle(NULL), NULL);
         SendMessage(hCenterIgnoreTaskbar, BM_SETCHECK, g_centerIgnoreTaskbar ? BST_CHECKED : BST_UNCHECKED, 0);
 
         yPos += 34;
 
-        // ============ 第八块：开机自启 ============
+        // ============ 第八块：开机自启（含延迟） ============
         BOOL autoStartOn = IsAutoStartRegistered();
         hAutoStart = CreateWindow(L"BUTTON", L"开机自动启动（静默）",
             WS_VISIBLE | WS_CHILD | BS_AUTOCHECKBOX,
-            labelX, yPos, 260, 22,
+            labelX, yPos + 2, 150, 22,
             hwnd, (HMENU)IDC_AUTOSTART, GetModuleHandle(NULL), NULL);
         SendMessage(hAutoStart, BM_SETCHECK, autoStartOn ? BST_CHECKED : BST_UNCHECKED, 0);
 
-        yPos += 26;
-
-        CreateWindow(L"STATIC", L"延迟启动（秒）:",
+        CreateWindow(L"STATIC", L"延迟:",
             WS_VISIBLE | WS_CHILD,
-            labelX, yPos, labelWidth, 22,
+            labelX + 155, yPos + 2, 40, 22,
             hwnd, NULL, GetModuleHandle(NULL), NULL);
 
         hAutoStartDelay = CreateWindow(L"COMBOBOX", NULL,
             WS_VISIBLE | WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL,
-            fieldX, yPos, 100, 200,
+            labelX + 195, yPos, 90, 200,
             hwnd, (HMENU)IDC_AUTOSTART_DELAY, GetModuleHandle(NULL), NULL);
         SendMessage(hAutoStartDelay, CB_ADDSTRING, 0, (LPARAM)L"未选择");
         SendMessage(hAutoStartDelay, CB_ADDSTRING, 0, (LPARAM)L"5");
@@ -1119,13 +1567,13 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
         CreateWindow(L"STATIC", isAdmin ? L"（登录后延迟启动）" : L"（延迟需管理员权限）",
             WS_VISIBLE | WS_CHILD,
-            fieldX + 110, yPos, 200, 22,
+            labelX + 292, yPos + 2, 150, 22,
             hwnd, NULL, GetModuleHandle(NULL), NULL);
 
         // 普通用户写注册表 Run 无法设置延迟，直接置灰下拉框
         UpdateAutoStartEnabledState(hAutoStart, hAutoStartDelay);
 
-        yPos += 34;
+        yPos += 38;
 
         // ============ 第九块：当前权限状态 ============
         hAdminStatus = CreateWindow(L"STATIC", L"",
@@ -1213,7 +1661,22 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         SetBkMode((HDC)wParam, TRANSPARENT);
         return (LRESULT)SettingsBgBrush();
 
+    case WM_TIMER:
+        if (wParam == 1) {
+            // 预览框的自动隐藏定时器
+            KillTimer(hwnd, 1);
+            HideRegulatePreview();
+        }
+        break;
+
     case WM_DESTROY:
+        // 预览框与定时器必须随设置窗口一起销毁，避免残影和句柄泄漏
+        KillTimer(hwnd, 1);
+        if (g_hPreviewWnd) {
+            DestroyWindow(g_hPreviewWnd);
+            g_hPreviewWnd = NULL;
+        }
+
         // 设置窗口每次打开都会重新创建 Tooltip 和图标，销毁时必须一并释放，避免句柄泄漏
         if (hPermissionTip) {
             DestroyWindow(hPermissionTip);
@@ -1227,7 +1690,12 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         break;
 
     case WM_HSCROLL:
-        if ((HWND)lParam == hTransparencySlider) {
+        if ((HWND)lParam == hRegulateSlider) {
+            g_regulateScale = ClampInt((int)SendMessage(hRegulateSlider, TBM_GETPOS, 0, 0), 30, 90);
+            UpdateRegulateScaleLabel(hwnd, hRegulateScaleLabel);
+            ShowRegulatePreview(hwnd);
+        }
+        else if ((HWND)lParam == hTransparencySlider) {
             int pos = (int)SendMessage(hTransparencySlider, TBM_GETPOS, 0, 0);
             wchar_t text[50];
             swprintf_s(text, 50, L"透明度步长: %d%%", pos);
@@ -1236,6 +1704,18 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         break;
 
     case WM_COMMAND:
+        // 固定尺寸输入框内容变化：同步到全局并刷新预览
+        if (HIWORD(wParam) == EN_CHANGE &&
+            (LOWORD(wParam) == IDC_REGULATE_WIDTH_EDIT || LOWORD(wParam) == IDC_REGULATE_HEIGHT_EDIT)) {
+            if (LOWORD(wParam) == IDC_REGULATE_WIDTH_EDIT) {
+                g_regulateWidth = ClampInt(GetEditInt(hRegulateWidthEdit, g_regulateWidth), 100, 8000);
+            } else {
+                g_regulateHeight = ClampInt(GetEditInt(hRegulateHeightEdit, g_regulateHeight), 100, 8000);
+            }
+            ShowRegulatePreview(hwnd);
+            break;
+        }
+
         switch (LOWORD(wParam)) {
         case IDC_TRANSPARENCY_UP_BUTTON:
         {
@@ -1385,6 +1865,54 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             }
             break;
         }
+        case IDC_REGULATE_ENABLE:
+            g_enableRegulate = (SendMessage(hRegulateEnable, BM_GETCHECK, 0, 0) == BST_CHECKED);
+            break;
+        case IDC_REGULATE_MODE_PERCENT:
+        case IDC_REGULATE_MODE_FIXED:
+        {
+            g_regulateMode = (LOWORD(wParam) == IDC_REGULATE_MODE_FIXED) ? 1 : 0;
+            SendMessage(hRegulateModePercent, BM_SETCHECK, g_regulateMode == 0 ? BST_CHECKED : BST_UNCHECKED, 0);
+            SendMessage(hRegulateModeFixed, BM_SETCHECK, g_regulateMode == 1 ? BST_CHECKED : BST_UNCHECKED, 0);
+            SetControlsVisible(hRegulatePercentCtrls, 4, g_regulateMode == 0);
+            SetControlsVisible(hRegulateFixedCtrls, 6, g_regulateMode == 1);
+            UpdateRegulateScaleLabel(hwnd, hRegulateScaleLabel);
+            ShowRegulatePreview(hwnd);
+            break;
+        }
+        case IDC_REGULATE_CENTER:
+            g_regulateCenter = (SendMessage(hRegulateCenter, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+            ShowRegulatePreview(hwnd);
+            break;
+        case IDC_REGULATE_IGNORE_TASKBAR:
+            g_regulateIgnoreTaskbar = (SendMessage(hRegulateIgnoreTaskbar, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+            UpdateRegulateScaleLabel(hwnd, hRegulateScaleLabel);
+            ShowRegulatePreview(hwnd);
+            break;
+        case IDC_REGULATE_BUTTON:
+        {
+            if (g_isListeningHotkey && g_currentListeningType == 7) {
+                g_isListeningHotkey = FALSE;
+                g_currentListeningType = 0;
+                SetWindowText(hRegulateButton, L"设置");
+                // 恢复原来的热键显示
+                wchar_t keyText[128];
+                swprintf_s(keyText, 128, L"%s+%s", GetModifierName(g_regulateModifiers), GetKeyName(g_regulateKey));
+                SetWindowText(hRegulateDisplay, keyText);
+                ReleaseCapture();
+            }
+            else {
+                g_isListeningHotkey = TRUE;
+                g_currentListeningType = 7;
+                g_hCurrentButton = hRegulateButton;
+                g_hCurrentDisplay = hRegulateDisplay;
+                g_listeningStartTime = GetTickCount();
+                SetWindowText(hRegulateButton, L"取消");
+                SetWindowText(hRegulateDisplay, L"请按下组合键...");
+                SetFocus(hwnd);
+            }
+            break;
+        }
         case IDC_TRANSPARENCY_ENABLE:
         {
             BOOL transparencyEnabled = (SendMessage(hTransparencyEnable, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -1414,6 +1942,14 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
             // 获取“居中时忽略任务栏”开关
             g_centerIgnoreTaskbar = (SendMessage(hCenterIgnoreTaskbar, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+
+            // 获取窗口大小调整参数（越界值统一钳制）
+            g_regulateMode = (SendMessage(hRegulateModeFixed, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+            g_regulateScale = ClampInt((int)SendMessage(hRegulateSlider, TBM_GETPOS, 0, 0), 30, 90);
+            g_regulateIgnoreTaskbar = (SendMessage(hRegulateIgnoreTaskbar, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
+            g_regulateWidth = ClampInt(GetEditInt(hRegulateWidthEdit, g_regulateWidth), 100, 8000);
+            g_regulateHeight = ClampInt(GetEditInt(hRegulateHeightEdit, g_regulateHeight), 100, 8000);
+            g_regulateCenter = (SendMessage(hRegulateCenter, BM_GETCHECK, 0, 0) == BST_CHECKED) ? 1 : 0;
 
             // 开机自启：先记住勾选状态和下拉框选择
             BOOL wantAutoStart = (SendMessage(hAutoStart, BM_GETCHECK, 0, 0) == BST_CHECKED);
@@ -1524,6 +2060,10 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
                 case 6: // 窗口置底
                     g_sendToBottomModifiers = modifiers;
                     g_sendToBottomKey = (UINT)wParam;
+                    break;
+                case 7: // 窗口大小调整
+                    g_regulateModifiers = modifiers;
+                    g_regulateKey = (UINT)wParam;
                     break;
                 }
 
@@ -1736,6 +2276,11 @@ void RegisterHotKeys(HWND hwnd)
             MessageBox(hwnd, L"窗口置底热键注册失败，可能与其他程序冲突", L"警告", MB_OK | MB_ICONWARNING);
         }
     }
+    if (g_enableRegulate) {
+        if (!RegisterHotKey(hwnd, ID_HOTKEY_REGULATE, g_regulateModifiers, g_regulateKey)) {
+            MessageBox(hwnd, L"窗口大小调整热键注册失败，可能与其他程序冲突", L"警告", MB_OK | MB_ICONWARNING);
+        }
+    }
 }
 
 // 注销全局热键
@@ -1747,6 +2292,7 @@ void UnregisterHotKeys(HWND hwnd)
     UnregisterHotKey(hwnd, ID_HOTKEY_SHAKE_WINDOW);
     UnregisterHotKey(hwnd, ID_HOTKEY_RESET_TRANSPARENCY);
     UnregisterHotKey(hwnd, ID_HOTKEY_SEND_TO_BOTTOM);
+    UnregisterHotKey(hwnd, ID_HOTKEY_REGULATE);
 }
 
 // 调整窗口透明度
@@ -1836,7 +2382,8 @@ void CenterWindow()
 
     // 目标窗口所在的显示器；跨屏或最小化时取距离最近的那台，避免“飞回主屏”
     HMONITOR hMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = { sizeof(MONITORINFO) };
+    MONITORINFO mi = { 0 };
+    mi.cbSize = sizeof(MONITORINFO);
     if (!hMonitor || !GetMonitorInfoW(hMonitor, &mi)) {
         return;
     }
@@ -1912,50 +2459,65 @@ void SendWindowToBottom()
 // 加载配置
 void LoadConfig()
 {
-    g_transparencyStep = GetPrivateProfileInt(L"Settings", L"TransparencyStep", 10, CONFIG_FILE);
+    g_transparencyStep = GetPrivateProfileInt(L"Settings", L"TransparencyStep", 10, g_configPath);
 
     // 启动提示开关：默认显示，首次运行生成的配置也会写成 1
-    g_showStartupMessage = GetPrivateProfileInt(L"Settings", L"ShowStartupMessage", 1, CONFIG_FILE);
+    g_showStartupMessage = GetPrivateProfileInt(L"Settings", L"ShowStartupMessage", 1, g_configPath);
 
     // 开机自启延迟（秒）：只接受 0/5/10/15/30，其它值一律当 0（未选择）
-    g_autoStartDelay = GetPrivateProfileInt(L"Settings", L"AutoStartDelay", 0, CONFIG_FILE);
+    g_autoStartDelay = GetPrivateProfileInt(L"Settings", L"AutoStartDelay", 0, g_configPath);
     if (g_autoStartDelay != 5 && g_autoStartDelay != 10 &&
         g_autoStartDelay != 15 && g_autoStartDelay != 30) {
         g_autoStartDelay = 0;
     }
 
     // 居中时是否忽略任务栏：默认忽略（用工作区 rcWork 居中）
-    g_centerIgnoreTaskbar = GetPrivateProfileInt(L"Settings", L"CenterIgnoreTaskbar", 1, CONFIG_FILE);
+    g_centerIgnoreTaskbar = GetPrivateProfileInt(L"Settings", L"CenterIgnoreTaskbar", 1, g_configPath);
 
     // 加载热键配置
     // 默认值：窗口居中 Alt+Shift+C，窗口抖动 Alt+Shift+Down，
     //        透明度增加 Alt+Shift+Right，透明度减少 Alt+Shift+Left
     const UINT defaultModifiers = MOD_ALT | MOD_SHIFT;
 
-    g_transparencyUpModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpModifiers", defaultModifiers, CONFIG_FILE);
-    g_transparencyUpKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpKey", VK_RIGHT, CONFIG_FILE);
-    g_transparencyDownModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownModifiers", defaultModifiers, CONFIG_FILE);
-    g_transparencyDownKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownKey", VK_LEFT, CONFIG_FILE);
+    g_transparencyUpModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpModifiers", defaultModifiers, g_configPath);
+    g_transparencyUpKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyUpKey", VK_RIGHT, g_configPath);
+    g_transparencyDownModifiers = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownModifiers", defaultModifiers, g_configPath);
+    g_transparencyDownKey = GetPrivateProfileInt(L"Hotkeys", L"TransparencyDownKey", VK_LEFT, g_configPath);
     // 窗口居中：默认 Alt+Shift+C
-    g_centerModifiers = GetPrivateProfileInt(L"Hotkeys", L"CenterModifiers", defaultModifiers, CONFIG_FILE);
-    g_centerKey = GetPrivateProfileInt(L"Hotkeys", L"CenterKey", 'C', CONFIG_FILE);
+    g_centerModifiers = GetPrivateProfileInt(L"Hotkeys", L"CenterModifiers", defaultModifiers, g_configPath);
+    g_centerKey = GetPrivateProfileInt(L"Hotkeys", L"CenterKey", 'C', g_configPath);
     // 窗口抖动：默认 Alt+Shift+Down
-    g_shakeModifiers = GetPrivateProfileInt(L"Hotkeys", L"ShakeModifiers", defaultModifiers, CONFIG_FILE);
-    g_shakeKey = GetPrivateProfileInt(L"Hotkeys", L"ShakeKey", VK_DOWN, CONFIG_FILE);
+    g_shakeModifiers = GetPrivateProfileInt(L"Hotkeys", L"ShakeModifiers", defaultModifiers, g_configPath);
+    g_shakeKey = GetPrivateProfileInt(L"Hotkeys", L"ShakeKey", VK_DOWN, g_configPath);
     // 重置透明度：默认 Alt+Shift+Up
-    g_resetTransparencyModifiers = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyModifiers", defaultModifiers, CONFIG_FILE);
-    g_resetTransparencyKey = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyKey", VK_UP, CONFIG_FILE);
+    g_resetTransparencyModifiers = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyModifiers", defaultModifiers, g_configPath);
+    g_resetTransparencyKey = GetPrivateProfileInt(L"Hotkeys", L"ResetTransparencyKey", VK_UP, g_configPath);
     // 窗口置底：默认 Alt+Shift+Z
-    g_sendToBottomModifiers = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomModifiers", defaultModifiers, CONFIG_FILE);
-    g_sendToBottomKey = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomKey", 'Z', CONFIG_FILE);
+    g_sendToBottomModifiers = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomModifiers", defaultModifiers, g_configPath);
+    g_sendToBottomKey = GetPrivateProfileInt(L"Hotkeys", L"SendToBottomKey", 'Z', g_configPath);
+    // 窗口大小调整：默认 Alt+Shift+R
+    g_regulateModifiers = GetPrivateProfileInt(L"Hotkeys", L"RegulateModifiers", defaultModifiers, g_configPath);
+    g_regulateKey = GetPrivateProfileInt(L"Hotkeys", L"RegulateKey", 'R', g_configPath);
 
     // 加载热键开关状态（默认只启用窗口居中）
-    g_enableTransparencyUp = GetPrivateProfileInt(L"Switches", L"EnableTransparencyUp", 0, CONFIG_FILE);
-    g_enableTransparencyDown = GetPrivateProfileInt(L"Switches", L"EnableTransparencyDown", 0, CONFIG_FILE);
-    g_enableCenter = GetPrivateProfileInt(L"Switches", L"EnableCenter", 1, CONFIG_FILE);
-    g_enableShake = GetPrivateProfileInt(L"Switches", L"EnableShake", 0, CONFIG_FILE);
-    g_enableResetTransparency = GetPrivateProfileInt(L"Switches", L"EnableResetTransparency", 1, CONFIG_FILE);
-    g_enableSendToBottom = GetPrivateProfileInt(L"Switches", L"EnableSendToBottom", 0, CONFIG_FILE);
+    g_enableTransparencyUp = GetPrivateProfileInt(L"Switches", L"EnableTransparencyUp", 0, g_configPath);
+    g_enableTransparencyDown = GetPrivateProfileInt(L"Switches", L"EnableTransparencyDown", 0, g_configPath);
+    g_enableCenter = GetPrivateProfileInt(L"Switches", L"EnableCenter", 1, g_configPath);
+    g_enableShake = GetPrivateProfileInt(L"Switches", L"EnableShake", 0, g_configPath);
+    g_enableResetTransparency = GetPrivateProfileInt(L"Switches", L"EnableResetTransparency", 0, g_configPath);
+    g_enableSendToBottom = GetPrivateProfileInt(L"Switches", L"EnableSendToBottom", 0, g_configPath);
+    g_enableRegulate = GetPrivateProfileInt(L"Switches", L"EnableRegulate", 0, g_configPath);
+
+    // 窗口大小调整参数（统一做范围钳制）
+    g_regulateMode = GetPrivateProfileInt(L"Settings", L"RegulateMode", 0, g_configPath);
+    if (g_regulateMode != 0 && g_regulateMode != 1) {
+        g_regulateMode = 0;
+    }
+    g_regulateScale = ClampInt(GetPrivateProfileInt(L"Settings", L"RegulateScale", 70, g_configPath), 30, 90);
+    g_regulateIgnoreTaskbar = GetPrivateProfileInt(L"Settings", L"RegulateIgnoreTaskbar", 1, g_configPath);
+    g_regulateWidth = ClampInt(GetPrivateProfileInt(L"Settings", L"RegulateWidth", 1280, g_configPath), 100, 8000);
+    g_regulateHeight = ClampInt(GetPrivateProfileInt(L"Settings", L"RegulateHeight", 720, g_configPath), 100, 8000);
+    g_regulateCenter = GetPrivateProfileInt(L"Settings", L"RegulateCenter", 1, g_configPath);
 
     // 限制透明度步长范围
     if (g_transparencyStep < 1) g_transparencyStep = 1;
@@ -1963,7 +2525,7 @@ void LoadConfig()
 
     // 首次运行（配置文件还不存在）：把上面这套默认值落盘，
     // 这样 ShowStartupMessage 等设置从第一次启动起就是持久化的
-    if (GetFileAttributes(CONFIG_FILE) == INVALID_FILE_ATTRIBUTES) {
+    if (GetFileAttributes(g_configPath) == INVALID_FILE_ATTRIBUTES) {
         SaveConfig();
     }
 }
@@ -1975,59 +2537,79 @@ void SaveConfig()
 
     // 保存透明度步长
     swprintf(value, 32, L"%d", g_transparencyStep);
-    WritePrivateProfileString(L"Settings", L"TransparencyStep", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"TransparencyStep", value, g_configPath);
 
     // 保存启动提示开关
     swprintf(value, 32, L"%d", g_showStartupMessage);
-    WritePrivateProfileString(L"Settings", L"ShowStartupMessage", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"ShowStartupMessage", value, g_configPath);
 
     // 保存开机自启延迟
     swprintf(value, 32, L"%d", g_autoStartDelay);
-    WritePrivateProfileString(L"Settings", L"AutoStartDelay", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"AutoStartDelay", value, g_configPath);
+
+    // 保存窗口大小调整参数
+    swprintf(value, 32, L"%d", g_regulateMode);
+    WritePrivateProfileString(L"Settings", L"RegulateMode", value, g_configPath);
+    swprintf(value, 32, L"%d", g_regulateScale);
+    WritePrivateProfileString(L"Settings", L"RegulateScale", value, g_configPath);
+    swprintf(value, 32, L"%d", g_regulateIgnoreTaskbar);
+    WritePrivateProfileString(L"Settings", L"RegulateIgnoreTaskbar", value, g_configPath);
+    swprintf(value, 32, L"%d", g_regulateWidth);
+    WritePrivateProfileString(L"Settings", L"RegulateWidth", value, g_configPath);
+    swprintf(value, 32, L"%d", g_regulateHeight);
+    WritePrivateProfileString(L"Settings", L"RegulateHeight", value, g_configPath);
+    swprintf(value, 32, L"%d", g_regulateCenter);
+    WritePrivateProfileString(L"Settings", L"RegulateCenter", value, g_configPath);
 
     // 保存“居中时忽略任务栏”
     swprintf(value, 32, L"%d", g_centerIgnoreTaskbar);
-    WritePrivateProfileString(L"Settings", L"CenterIgnoreTaskbar", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Settings", L"CenterIgnoreTaskbar", value, g_configPath);
 
     // 保存热键配置
     swprintf(value, 32, L"%d", g_transparencyUpModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_transparencyUpKey);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyUpKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_transparencyDownModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_transparencyDownKey);
-    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"TransparencyDownKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_centerModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"CenterModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"CenterModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_centerKey);
-    WritePrivateProfileString(L"Hotkeys", L"CenterKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"CenterKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_shakeModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"ShakeModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ShakeModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_shakeKey);
-    WritePrivateProfileString(L"Hotkeys", L"ShakeKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ShakeKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_resetTransparencyModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_resetTransparencyKey);
-    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"ResetTransparencyKey", value, g_configPath);
     swprintf(value, 32, L"%d", g_sendToBottomModifiers);
-    WritePrivateProfileString(L"Hotkeys", L"SendToBottomModifiers", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"SendToBottomModifiers", value, g_configPath);
     swprintf(value, 32, L"%d", g_sendToBottomKey);
-    WritePrivateProfileString(L"Hotkeys", L"SendToBottomKey", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Hotkeys", L"SendToBottomKey", value, g_configPath);
+    swprintf(value, 32, L"%d", g_regulateModifiers);
+    WritePrivateProfileString(L"Hotkeys", L"RegulateModifiers", value, g_configPath);
+    swprintf(value, 32, L"%d", g_regulateKey);
+    WritePrivateProfileString(L"Hotkeys", L"RegulateKey", value, g_configPath);
 
     // 保存热键开关状态
     swprintf(value, 32, L"%d", g_enableTransparencyUp ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableTransparencyUp", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableTransparencyUp", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableTransparencyDown ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableTransparencyDown", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableTransparencyDown", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableCenter ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableCenter", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableCenter", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableShake ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableShake", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableShake", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableResetTransparency ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableResetTransparency", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableResetTransparency", value, g_configPath);
     swprintf(value, 32, L"%d", g_enableSendToBottom ? 1 : 0);
-    WritePrivateProfileString(L"Switches", L"EnableSendToBottom", value, CONFIG_FILE);
+    WritePrivateProfileString(L"Switches", L"EnableSendToBottom", value, g_configPath);
+    swprintf(value, 32, L"%d", g_enableRegulate ? 1 : 0);
+    WritePrivateProfileString(L"Switches", L"EnableRegulate", value, g_configPath);
 }
 
 // 获取修饰键名称（使用完整全称，避免缩写导致显示不完整或歧义）
