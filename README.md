@@ -79,32 +79,39 @@ WinClearFocus.exe -silent
 
 ### 环境要求
 
-- Windows 10 / 11
-- CMake 3.20+（开发时使用 4.3）
-- MinGW-w64（g++ 13+）或 Visual Studio 2022
-- 系统库：`user32`、`shell32`、`comctl32`、`gdiplus`、`dwmapi`（均由 CMake 自动链接）
+| 项目 | 要求 |
+| --- | --- |
+| 操作系统 | Windows 10 / 11 |
+| CMake | 3.20+（开发时使用 4.3） |
+| 构建工具 | **Ninja**（推荐，比 MinGW Makefiles 更快） |
+| 编译器 | **强烈推荐 [MSYS2](https://www.msys2.org/) UCRT64 工具链**（自带完整的静态库，可产出无 DLL 依赖的单文件 exe） |
 
-### 使用 MinGW 构建
+> ⚠️ 不建议使用 CLion 自带的 MinGW 15.2：它的静态 `libwinpthread.a` 混用了 UCRT 符号，开启 `-static` 后会在链接阶段报 `__intrinsic_setjmpex` / `__ms_vsnprintf` 未定义。请改用 MSYS2 UCRT64。
+>
+> 由于链接参数（`-static`、`-static-libstdc++` 等）是 GCC 专有选项，本项目不再提供 MSVC（Visual Studio）构建方式。
 
-```bash
-cmake -S . -B build -G "MinGW Makefiles"
-cmake --build build -j
-```
-
-生成 `build/WinClearFocus.exe`，无外部 DLL 依赖。
-
-### 使用 Visual Studio 构建
+### 使用 MSYS2 UCRT64 + Ninja 构建
 
 ```bash
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-cmake --build build --config Release
+cmake -S . -B build -G Ninja \
+      -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe \
+      -DCMAKE_RC_COMPILER=C:/msys64/ucrt64/bin/windres.exe
+cmake --build build
 ```
+
+在 CLion 中更简单：`Settings → Build, Execution, Deployment → Toolchains` 新增一个 MinGW 工具链，Toolset 选择 `C:\msys64\ucrt64`；再到 `CMake` 设置里把当前 Profile 的 Toolchain 换成它，Reload 即可。
+
+### 静态编译说明
+
+本项目在 `CMakeLists.txt` 中默认开启了 `-static -static-libgcc -static-libstdc++`：**生成的 exe 文件自带 C++ 运行库与 winpthread，无需任何 DLL 即可在纯净 Windows 环境下双击运行**，不会再出现缺少 `libgcc_s_seh-1.dll`、`libstdc++-6.dll` 的问题。
+
+产物位于 `build/WinClearFocus.exe`，体积约 800 KB（已包含多尺寸图标与内嵌 manifest）。
 
 > 可执行文件内嵌了 **comctl32 v6 manifest**，因此复选框、输入框、滑杆等原生控件会自动使用系统视觉样式；窗口圆角依赖 Windows 11 的 DWM，Win10 上会退化为直角（不影响功能）。
 
 ## 📝 配置文件
 
-程序运行目录下的 `config.ini` 保存全部设置，首次运行会自动生成。也可以手工编辑后再启动。
+程序所在目录（与 exe 同级）下的 `config.ini` 保存全部设置，首次运行会自动生成；无论从哪个工作目录启动，读写都指向 exe 同级的配置文件。也可以手工编辑后再启动。
 
 ### `[Settings]`
 
