@@ -10,7 +10,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white">
   <img alt="Language" src="https://img.shields.io/badge/Language-C%2B%2B%20%2F%20Win32-00599C">
   <img alt="Build" src="https://img.shields.io/badge/Build-CMake%20%2B%20MinGW-064F8C">
-  <img alt="Size" src="https://img.shields.io/badge/Binary-%E7%BA%A6%20200%20KB-brightgreen">
+  <img alt="Size" src="https://img.shields.io/badge/Binary-%E7%BA%A6%201%20MB-brightgreen">
 </p>
 
 WinClearFocus 基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2Clear) 二次开发，使用 **C++ + 纯 Win32 API** 实现，不使用任何第三方 UI 框架。单文件绿色运行、托盘常驻，界面由 GDI+ 自绘并启用 Windows 11 视觉样式。
