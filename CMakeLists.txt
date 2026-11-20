@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.3)
+cmake_minimum_required(VERSION 3.20)
 project(WinClearFocus LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 14)
@@ -9,19 +9,46 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # 让 windows.h 把 MessageBox、CreateWindow 等映射到 ...W 版本。
 add_compile_definitions(UNICODE _UNICODE)
 
-include_directories(WinClearFocus)
+set(WCF_SOURCES
+        src/main.cpp
+
+        src/app/AppContext.cpp
+        src/app/Application.cpp
+
+        src/core/AutoStart.cpp
+        src/core/ConfigStore.cpp
+        src/core/HotkeyManager.cpp
+        src/core/Settings.cpp
+        src/core/WindowActions.cpp
+
+        src/ui/MainWindow.cpp
+        src/ui/PreviewWindow.cpp
+        src/ui/SettingsControls.cpp
+        src/ui/SettingsRenderer.cpp
+        src/ui/SettingsWindow.cpp
+        src/ui/TrayIcon.cpp
+
+        src/util/HotkeyText.cpp
+        src/util/Win32Utils.cpp
+)
 
 # WIN32 关键字生成 GUI 子系统程序（MinGW 下等价于 -mwindows），不会弹出控制台黑框
 add_executable(WinClearFocus WIN32
-        WinClearFocus/resource.h
-        WinClearFocus/WinClearFocus.cpp
-        WinClearFocus/WinClearFocus.ico
-        WinClearFocus/WinClearFocus.manifest
-        WinClearFocus/WinClearFocus.rc)
+        ${WCF_SOURCES}
+        res/resource.h
+        res/WinClearFocus.rc
+        res/WinClearFocus.ico
+        res/WinClearFocus.manifest
+)
+
+target_include_directories(WinClearFocus PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/res
+)
 
 # 清单改了要让 .rc 重新编译（windres 不会自动感知这个依赖）
-set_source_files_properties(WinClearFocus/WinClearFocus.rc PROPERTIES
-        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/WinClearFocus/WinClearFocus.manifest")
+set_source_files_properties(res/WinClearFocus.rc PROPERTIES
+        OBJECT_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/res/WinClearFocus.manifest")
 
 # 静态链接 GCC 运行库与 winpthread，生成单文件绿色 exe：
 # 否则在没装 MinGW 的机器上会缺少 libgcc_s_seh-1.dll / libstdc++-6.dll / libwinpthread-1.dll
