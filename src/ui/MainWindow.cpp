@@ -11,8 +11,21 @@
 namespace wcf {
 namespace {
 
+UINT TaskbarCreatedMessage()
+{
+    // explorer.exe 重启后向所有顶层窗口广播该消息，用于恢复托盘图标
+    static const UINT message = RegisterWindowMessageW(L"TaskbarCreated");
+    return message;
+}
+
 LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+    const UINT taskbarCreated = TaskbarCreatedMessage();
+    if (taskbarCreated != 0 && uMsg == taskbarCreated) {
+        TrayIcon::Recreate(hwnd);
+        return 0;
+    }
+
     switch (uMsg) {
     case WM_HOTKEY:
     {

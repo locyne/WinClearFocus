@@ -34,6 +34,16 @@ void Create(HWND owner)
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }
 
+void Recreate(HWND owner)
+{
+    // 先清掉旧记录再重新添加；explorer 重启后旧图标已经不存在，
+    // 重复 NIM_DELETE 也是安全的。
+    if (g_nid.cbSize != 0) {
+        Shell_NotifyIconW(NIM_DELETE, &g_nid);
+    }
+    Create(owner);
+}
+
 void Remove()
 {
     Shell_NotifyIconW(NIM_DELETE, &g_nid);

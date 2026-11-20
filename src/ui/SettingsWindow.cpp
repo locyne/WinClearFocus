@@ -46,10 +46,17 @@ struct HotkeyCaptureState {
 
 HotkeyCaptureState g_capture = { false, HotkeyAction::Count, NULL, NULL, 0 };
 
+// 录制超时定时器（1 已被虚线预览框占用）
+const UINT_PTR kCaptureTimerId = 2;
+
 void CancelHotkeyCapture()
 {
     if (!g_capture.active) {
         return;
+    }
+
+    if (g_settingsWindow) {
+        KillTimer(g_settingsWindow, kCaptureTimerId);
     }
 
     SetWindowTextW(g_capture.button, L"设置");
@@ -60,12 +67,18 @@ void CancelHotkeyCapture()
     g_capture.button = NULL;
     g_capture.display = NULL;
     ReleaseCapture();
+
+    // 录制期间热键被临时注销，取消后立即恢复
+    RegisterHotkeys(g_mainWindow);
 }
 
 void BeginHotkeyCapture(HotkeyAction action, HWND button, HWND display)
 {
     // 点击另一个“设置”按钮时，先把上一个按钮恢复原状
     CancelHotkeyCapture();
+
+    // 录制期间必须注销全局热键，否则系统会吞掉与现有热键相同的按键
+    UnregisterHotkeys(g_mainWindow);
 
     g_capture.active = true;
     g_capture.action = action;
@@ -76,6 +89,11 @@ void BeginHotkeyCapture(HotkeyAction action, HWND button, HWND display)
     SetWindowTextW(button, L"取消");
     SetWindowTextW(display, L"请按下组合键...");
     SetFocus(g_settingsWindow);
+
+    // 10 秒无输入自动取消，避免热键一直停留在注销状态
+    if (g_settingsWindow) {
+        SetTimer(g_settingsWindow, kCaptureTimerId, 10000, NULL);
+    }
 }
 
 void ToggleHotkeyCapture(HotkeyAction action, HWND button, HWND display)
@@ -184,8 +202,7 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
     }
 
     case WM_CREATE:
-        // 打开设置窗口时，先取消所有热键监听
-        UnregisterHotkeys(g_mainWindow);
+        // 设置窗口打开期间保持热键可用；只有开始录制新热键时才临时注销
         g_trackingMouse = false;
         g_hover = SettingsRenderer::HoverState();
         g_capture.active = false;
@@ -213,12 +230,24 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             // 预览框的自动隐藏定时器
             KillTimer(hwnd, 1);
             HideRegulatePreview();
+        } else if (wParam == kCaptureTimerId && g_capture.active) {
+            // 录制超时：恢复按钮文字并重新注册全局热键
+            KillTimer(hwnd, kCaptureTimerId);
+            g_capture.active = false;
+            SetWindowTextW(g_capture.button, L"设置");
+            SetWindowTextW(g_capture.display, L"监听超时，请重试");
+            g_capture.action = HotkeyAction::Count;
+            g_capture.button = NULL;
+            g_capture.display = NULL;
+            ReleaseCapture();
+            RegisterHotkeys(g_mainWindow);
         }
         break;
 
     case WM_DESTROY:
         // 预览框与定时器必须随设置窗口一起销毁，避免残影和句柄泄漏
         KillTimer(hwnd, 1);
+        KillTimer(hwnd, kCaptureTimerId);
         DestroyPreviewWindow();
 
         // Tooltip / 权限图标随控件一起释放
@@ -370,6 +399,9 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
 
         case IDC_SAVE_BUTTON:
         {
+            // 保存前结束可能仍在进行的热键录制，避免热键保持注销状态
+            CancelHotkeyCapture();
+
             AppSettings& s = Settings();
 
             s.transparencyStep =
@@ -426,7 +458,8 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
             break;
 
         case IDCANCEL:
-            // 取消设置时，重新注册所有热键
+            // 取消设置时，先结束录制（如有），再重新注册所有热键
+            CancelHotkeyCapture();
             RegisterHotkeys(g_mainWindow);
             DestroyWindow(hwnd);
             g_settingsWindow = NULL;
@@ -439,11 +472,15 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
         if (g_capture.active) {
             // 检查超时（10 秒）
             if (GetTickCount() - g_capture.startTime > 10000) {
+                KillTimer(hwnd, kCaptureTimerId);
                 g_capture.active = false;
                 SetWindowTextW(g_capture.button, L"设置");
                 SetWindowTextW(g_capture.display, L"监听超时，请重试");
                 g_capture.action = HotkeyAction::Count;
+                g_capture.button = NULL;
+                g_capture.display = NULL;
                 ReleaseCapture();
+                RegisterHotkeys(g_mainWindow);
                 break;
             }
 
@@ -493,19 +530,22 @@ LRESULT CALLBACK SettingsProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam
                 FormatHotkey(hotkeyText, 128, binding);
                 SetWindowTextW(g_capture.display, hotkeyText);
 
-                // 停止监听
+                // 停止监听：新组合键立即生效，无需等到保存
+                KillTimer(hwnd, kCaptureTimerId);
                 SetWindowTextW(g_capture.button, L"设置");
                 g_capture.active = false;
                 g_capture.action = HotkeyAction::Count;
                 g_capture.button = NULL;
                 g_capture.display = NULL;
                 ReleaseCapture();
+                RegisterHotkeys(g_mainWindow);
             }
         }
         break;
 
     case WM_CLOSE:
-        // 关闭设置窗口时，重新注册所有热键
+        // 关闭设置窗口时，先结束录制（如有），再重新注册所有热键
+        CancelHotkeyCapture();
         RegisterHotkeys(g_mainWindow);
         DestroyWindow(hwnd);
         g_settingsWindow = NULL;
