@@ -3,7 +3,9 @@
 #include <stdio.h>
 
 #include "app/Constants.h"
+#include "core/Settings.h"
 #include "resource.h"
+#include "util/HotkeyText.h"
 
 namespace wcf {
 namespace {
@@ -33,11 +35,28 @@ INT_PTR CALLBACK StartupDialogProc(HWND hDlg, UINT uMsg, WPARAM wParam, LPARAM l
             SendMessageW(hDlg, WM_SETICON, ICON_SMALL, (LPARAM)g_smallIcon);
         }
 
+        // 正文使用系统标准信息图标（蓝色 i）
+        HICON infoIcon = LoadIconW(NULL, IDI_INFORMATION);
+        if (infoIcon) {
+            SendDlgItemMessageW(hDlg, IDC_STARTUP_ICON, STM_SETICON,
+                                (WPARAM)infoIcon, 0);
+        }
+
         wchar_t line1[128];
         swprintf_s(line1, 128, L"%s已在系统托盘运行。", WCF_APP_NAME_ZH);
         SetDlgItemTextW(hDlg, IDC_STARTUP_LINE1, line1);
-        SetDlgItemTextW(hDlg, IDC_STARTUP_LINE2, L"右键点击托盘图标进行设置。");
-        SetDlgItemTextW(hDlg, IDC_STARTUP_LINE3, L"提示：命令行加 -silent 可静默启动");
+
+        // 提醒默认只启用窗口居中，并显示当前设置里的居中快捷键
+        const HotkeyBinding& center = Hotkey(HotkeyAction::CenterWindow);
+        wchar_t keyText[128];
+        swprintf_s(keyText, 128, L"%s+%s",
+                   ModifierName(center.modifiers), KeyName(center.key));
+        wchar_t line2[160];
+        swprintf_s(line2, 160, L"默认仅启用居中：%s", keyText);
+        SetDlgItemTextW(hDlg, IDC_STARTUP_LINE2, line2);
+
+        SetDlgItemTextW(hDlg, IDC_STARTUP_LINE3, L"右键点击托盘图标进行设置。");
+        SetDlgItemTextW(hDlg, IDC_STARTUP_LINE4, L"提示：命令行加 -silent 可静默启动");
         return TRUE;
     }
 

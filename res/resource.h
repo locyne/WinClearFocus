@@ -7,4 +7,6 @@
 #define IDC_STARTUP_LINE1                1003
 #define IDC_STARTUP_LINE2                1004
 #define IDC_STARTUP_LINE3                1005
+#define IDC_STARTUP_ICON                 1006
+#define IDC_STARTUP_LINE4                1007
 
