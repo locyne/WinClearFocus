@@ -2,6 +2,7 @@
 
 // ===== 应用信息 =====
 #define WCF_APP_VERSION L"v1.2.0"
+#define WCF_APP_NAME_ZH L"窗口控制与聚焦"
 
 // ===== 窗口类名 =====
 #define WCF_MAIN_WINDOW_CLASS     L"WinClearFocusClass"

@@ -3,8 +3,9 @@
 <img src="res/WinClearFocus.ico" width="128"/>
 </div>
 <h1 align="center">WinClearFocus</h1>
+<p align="center"><b>窗口控制与聚焦</b></p>
 
-<p align="center">一个轻量级的 Windows 窗口辅助工具：调透明度、居中、置底、抖动——全部一个热键搞定。</p>
+<p align="center">一个轻量级的 Windows 窗口辅助工具：调透明度、居中、置底、抖动、调整尺寸——全部一个热键搞定。</p>
 
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white">
@@ -14,7 +15,7 @@
   <img alt="Size" src="https://img.shields.io/badge/Binary-%E7%BA%A6%201%20MB-brightgreen">
 </p>
 
-WinClearFocus 基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2Clear) 二次开发，使用 **C++ + 纯 Win32 API** 实现，不使用任何第三方 UI 框架。单文件绿色运行、托盘常驻，界面由 GDI+ 自绘并启用 Windows 11 视觉样式。
+WinClearFocus（窗口控制与聚焦）基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2Clear) 二次开发，使用 **C++ + 纯 Win32 API** 实现，不使用任何第三方 UI 框架。单文件绿色运行、托盘常驻，界面由 GDI+ 自绘并启用 Windows 11 视觉样式。
 
 ## 📸 界面预览
 
@@ -25,6 +26,12 @@ WinClearFocus 基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2
 </p>
 
 <p align="center"><sub>设置界面 · 比例缩放 / 固定尺寸</sub></p>
+
+<p align="center">
+  <img src="docs/startup.png" width="320" alt="启动提示">
+</p>
+
+<p align="center"><sub>启动提示 · 程序图标 + 英文名</sub></p>
 
 ## ✨ 核心特性
 
@@ -206,7 +213,8 @@ WinClearFocus/
 ├── docs/
 │   ├── config.ini.sample        # 默认配置模板
 │   ├── settings-percent.png     # 设置界面截图 · 比例缩放
-│   └── settings-fixed.png       # 设置界面截图 · 固定尺寸
+│   ├── settings-fixed.png       # 设置界面截图 · 固定尺寸
+│   └── startup.png              # 启动提示截图
 ├── res/
 │   ├── resource.h
 │   ├── WinClearFocus.rc         # 图标与 manifest 资源
@@ -246,6 +254,9 @@ WinClearFocus/
 
 **新增 / 改进**
 
+- 新增中文显示名 **“窗口控制与聚焦”**
+- 精简启动提示，正文只保留托盘运行与设置入口；标题栏显示程序图标 + 英文名
+- 设置窗口标题栏改为小图标 + 常规字号，更接近系统原生标题栏
 - 完成源码模块化重构：按 `app / core / ui / util` 分层，单文件拆分为独立模块
 - 新增“启用重置”独立开关：即使关闭透明度调整，也能单独启用重置热键
 - 尺寸调整预览与居中位置统一遵循“居中时忽略任务栏”，切换后立即刷新

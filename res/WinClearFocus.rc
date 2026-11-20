@@ -1,4 +1,13 @@
+#pragma code_page(65001)
 #include "resource.h"
+
+// windres 不会自动包含 windows.h，这里补充对话框模板用到的样式常量。
+#define DS_SETFONT      0x00000040L
+#define DS_MODALFRAME   0x00000080L
+#define DS_CENTER       0x00000800L
+#define WS_POPUP        0x80000000L
+#define WS_CAPTION      0x00C00000L
+#define WS_SYSMENU      0x00080000L
 
 IDI_WINCLEARFOCUS ICON "WinClearFocus.ico"
 
@@ -22,16 +31,31 @@ BEGIN
     BEGIN
         BLOCK "080404b0"
         BEGIN
-            VALUE "FileDescription", "WinClearFocus"
+            VALUE "FileDescription", "WinClearFocus 窗口控制与聚焦"
             VALUE "FileVersion", "1.2.0.0"
             VALUE "InternalName", "WinClearFocus"
             VALUE "OriginalFilename", "WinClearFocus.exe"
             VALUE "ProductName", "WinClearFocus"
             VALUE "ProductVersion", "1.2.0"
+            VALUE "Comments", "窗口控制与聚焦"
         END
     END
     BLOCK "VarFileInfo"
     BEGIN
         VALUE "Translation", 0x804, 1200
     END
+END
+
+// 启动提示：原生对话框，标题栏由 WM_SETICON 设置程序图标。
+// 正文由 StartupDialog.cpp 在 WM_INITDIALOG 中填充。
+IDD_STARTUP_DIALOG DIALOGEX 0, 0, 260, 105
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "WinClearFocus"
+FONT 9, "Microsoft YaHei UI", 400, 0, 1
+BEGIN
+    ICON            IDI_WINCLEARFOCUS, -1, 12, 12, 20, 20
+    LTEXT           "", IDC_STARTUP_LINE1, 44, 12, 200, 14
+    LTEXT           "", IDC_STARTUP_LINE2, 44, 31, 200, 14
+    LTEXT           "", IDC_STARTUP_LINE3, 44, 50, 200, 14
+    DEFPUSHBUTTON   "确定", 1, 198, 81, 50, 16
 END

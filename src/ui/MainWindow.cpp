@@ -67,15 +67,20 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 bool InitializeMainWindow(HINSTANCE hInstance)
 {
-    WNDCLASSW wc = { 0 };
+    WNDCLASSEXW wc = { 0 };
+    wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = MainWindowProc;
     wc.hInstance = hInstance;
     wc.lpszClassName = WCF_MAIN_WINDOW_CLASS;
     wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.hIcon = LoadIconW(hInstance, MAKEINTRESOURCEW(IDI_WINCLEARFOCUS));
+    wc.hIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_WINCLEARFOCUS),
+                                  IMAGE_ICON,
+                                  GetSystemMetrics(SM_CXSMICON),
+                                  GetSystemMetrics(SM_CYSMICON), 0);
 
-    if (!RegisterClassW(&wc)) {
+    if (!RegisterClassExW(&wc)) {
         return false;
     }
 

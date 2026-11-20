@@ -2,11 +2,22 @@
 
 #include <gdiplus.h>
 
+#include "resource.h"
+
 namespace wcf {
 namespace SettingsRenderer {
 namespace {
 
 const COLORREF kSettingsBg = RGB(243, 243, 243);
+
+// 标题栏左侧的小图标。静态加载一次，随进程存活。
+HICON TitleIcon()
+{
+    static HICON icon = (HICON)LoadImageW(
+        GetModuleHandleW(NULL), MAKEINTRESOURCEW(IDI_WINCLEARFOCUS), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
+    return icon;
+}
 
 void FillRoundedRect(Gdiplus::Graphics& g, const RECT& r, int radius,
                      const Gdiplus::Color& color)
@@ -45,7 +56,8 @@ HBRUSH BackgroundBrush()
 
 RECT CloseButtonRect(int clientWidth)
 {
-    RECT r = { clientWidth - 40, 6, clientWidth - 8, 38 };
+    // 28×28 热区，垂直居中于 32px 标题栏
+    RECT r = { clientWidth - 36, 2, clientWidth - 8, 30 };
     return r;
 }
 
@@ -90,12 +102,12 @@ void Paint(HWND hwnd, const HoverState& hover)
         Gdiplus::SolidBrush bg(Gdiplus::Color(243, 243, 243));
         g.FillRectangle(&bg, 0, 0, w, h);
 
-        // 标题
-        Gdiplus::Font titleFont(L"Microsoft YaHei UI", 17.0f,
+        // 标题：小图标在左（绘制于 GDI+ 之后），文字从图标右侧开始
+        Gdiplus::Font titleFont(L"Microsoft YaHei UI", 13.0f,
                                 Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
         Gdiplus::SolidBrush titleBrush(Gdiplus::Color(32, 32, 32));
         g.DrawString(L"WinClearFocus 设置", -1, &titleFont,
-                     Gdiplus::PointF(16.0f, 8.0f), &titleBrush);
+                     Gdiplus::PointF(40.0f, 7.0f), &titleBrush);
 
         // 关闭按钮：圆形，悬停变红
         const RECT cb = CloseButtonRect(w);
@@ -131,6 +143,15 @@ void Paint(HWND hwnd, const HoverState& hover)
         FillRoundedRect(g, xb, 6, hover.cancel ? Gdiplus::Color(214, 214, 214)
                                                : Gdiplus::Color(229, 229, 229));
         DrawCenteredText(g, L"关闭", xb, btnFont, Gdiplus::Color(32, 32, 32));
+    }
+
+    // GDI+ 绘制结束后再叠加标题栏小图标
+    HICON icon = TitleIcon();
+    if (icon) {
+        const int iconW = GetSystemMetrics(SM_CXSMICON);
+        const int iconH = GetSystemMetrics(SM_CYSMICON);
+        DrawIconEx(memDC, 16, (kTitleBarHeight - iconH) / 2, icon,
+                   iconW, iconH, 0, NULL, DI_NORMAL);
     }
 
     BitBlt(hdc, 0, 0, w, h, memDC, 0, 0, SRCCOPY);

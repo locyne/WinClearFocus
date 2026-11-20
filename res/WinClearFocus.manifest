@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <assemblyIdentity type="win32" name="WinClearFocus" version="1.2.0.0" processorArchitecture="*"/>
-  <description>WinClearFocus</description>
+  <description>WinClearFocus 窗口控制与聚焦</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity type="win32"

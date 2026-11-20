@@ -26,6 +26,7 @@ set(WCF_SOURCES
         src/ui/SettingsControls.cpp
         src/ui/SettingsRenderer.cpp
         src/ui/SettingsWindow.cpp
+        src/ui/StartupDialog.cpp
         src/ui/TrayIcon.cpp
 
         src/util/HotkeyText.cpp

@@ -29,7 +29,7 @@ void Create(HWND owner)
     }
 
     swprintf_s(g_nid.szTip, sizeof(g_nid.szTip) / sizeof(wchar_t),
-               L"WinClearFocus %s - 窗口透明度控制", WCF_APP_VERSION);
+               L"WinClearFocus %s - %s", WCF_APP_VERSION, WCF_APP_NAME_ZH);
 
     Shell_NotifyIconW(NIM_ADD, &g_nid);
 }

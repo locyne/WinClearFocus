@@ -585,12 +585,10 @@ void ShowSettingsWindow()
     const int y = (screenHeight - windowHeight) / 2;
 
     // 无边框窗口；标题栏、圆角和底部按钮由自绘/DWM 提供
-    wchar_t windowTitle[100];
-    swprintf_s(windowTitle, 100, L"WinClearFocus %s 设置", WCF_APP_VERSION);
     g_settingsWindow = CreateWindowExW(
         WS_EX_APPWINDOW,
         WCF_SETTINGS_WINDOW_CLASS,
-        windowTitle,
+        L"WinClearFocus 设置",
         WS_POPUP | WS_CLIPCHILDREN,
         x, y,
         windowWidth, windowHeight,

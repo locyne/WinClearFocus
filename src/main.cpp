@@ -2,7 +2,6 @@
 #include <commctrl.h>
 #include <gdiplus.h>
 #include <shellapi.h>
-#include <stdio.h>
 
 #include "app/AppContext.h"
 #include "app/Constants.h"
@@ -10,6 +9,7 @@
 #include "core/HotkeyManager.h"
 #include "core/Settings.h"
 #include "ui/MainWindow.h"
+#include "ui/StartupDialog.h"
 #include "ui/TrayIcon.h"
 
 namespace {
@@ -82,21 +82,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance,
     wcf::TrayIcon::Create(wcf::g_mainWindow);
     wcf::RegisterHotkeys(wcf::g_mainWindow);
 
-    // 显示启动提示：命令行 -silent 绝对静默；否则由 config.ini 决定
+    // 显示启动提示：命令行 -silent 绝对静默；否则由 config.ini 决定。
+    // 使用原生对话框，标题栏显示程序图标 + 英文名 + 版本。
     if (!forceSilent && wcf::Settings().showStartupMessage != 0) {
-        wchar_t startupMsg[600];
-        swprintf_s(startupMsg, 600,
-            L"WinClearFocus %s 已启动！\n\n默认热键：\n"
-            L"- Alt+Shift+C 窗口居中\n"
-            L"- Alt+Shift+↓ 窗口抖动（默认关闭）\n"
-            L"- Alt+Shift+←/→ 调整窗口透明度（默认关闭）\n"
-            L"- Alt+Shift+↑ 重置透明度（默认关闭）\n"
-            L"- Alt+Shift+Z 窗口置底（默认关闭）\n"
-            L"- Alt+Shift+R 调整窗口大小（默认关闭）\n\n"
-            L"右键点击托盘图标进行设置\n\n"
-            L"提示：命令行加 -silent 可静默启动",
-            WCF_APP_VERSION);
-        MessageBoxW(NULL, startupMsg, L"WinClearFocus 启动成功", MB_OK | MB_ICONINFORMATION);
+        wcf::ShowStartupDialog(hInstance, wcf::g_mainWindow);
     }
 
     // 消息循环

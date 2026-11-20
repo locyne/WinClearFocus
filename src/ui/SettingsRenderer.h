@@ -5,7 +5,7 @@
 namespace wcf {
 namespace SettingsRenderer {
 
-constexpr int kTitleBarHeight = 36;
+constexpr int kTitleBarHeight = 32;
 constexpr int kWindowWidth = 460;
 constexpr int kWindowHeight = 720;   // 紧凑排版，适配 1366x768
 
