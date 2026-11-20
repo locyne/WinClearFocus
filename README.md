@@ -1,6 +1,6 @@
 <div align="center">
-<!-- 项目图标，默认调用仓库内app.ico，后续可替换GUI截图png -->
-<img src="https://github.com/locyne/WinClearFocus/blob/dev/WinClearFocus/WinClearFocus.ico" width="128"/>
+<!-- 项目图标，默认调用仓库内 res/WinClearFocus.ico -->
+<img src="res/WinClearFocus.ico" width="128"/>
 </div>
 <h1 align="center">WinClearFocus</h1>
 
@@ -10,6 +10,7 @@
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white">
   <img alt="Language" src="https://img.shields.io/badge/Language-C%2B%2B%20%2F%20Win32-00599C">
   <img alt="Build" src="https://img.shields.io/badge/Build-CMake%20%2B%20MinGW-064F8C">
+  <img alt="Version" src="https://img.shields.io/badge/Version-v1.2.0-blue">
   <img alt="Size" src="https://img.shields.io/badge/Binary-%E7%BA%A6%201%20MB-brightgreen">
 </p>
 
@@ -238,6 +239,30 @@ WinClearFocus/
 ```
 
 > 代码按 **app（应用生命周期）/ core（业务逻辑）/ ui（Win32 界面）/ util（无状态工具）** 分层，依赖方向自上而下，`core` 不反向依赖 `ui`。
+
+## 🆕 更新日志
+
+### v1.2.0
+
+**新增 / 改进**
+
+- 完成源码模块化重构：按 `app / core / ui / util` 分层，单文件拆分为独立模块
+- 新增“启用重置”独立开关：即使关闭透明度调整，也能单独启用重置热键
+- 尺寸调整预览与居中位置统一遵循“居中时忽略任务栏”，切换后立即刷新
+- 设置窗口打开期间全局热键仍然可用；录制新热键时临时注销，完成/取消/超时后自动恢复
+- explorer.exe 重启后自动恢复托盘图标
+- 新增纯逻辑单元测试（CTest）与 GitHub Actions 自动构建
+
+**修复**
+
+- 修复“重置透明度”因缺少 UI 开关而始终未注册热键的问题
+- 修复尺寸预览不随“居中时忽略任务栏”变化、且与实际调整位置不一致的问题
+- 修复录制热键时切换到另一个“设置”按钮后，上一个按钮卡在“取消”状态的问题
+
+### v1.1.0
+
+- 新增窗口大小调整（比例缩放 / 固定尺寸）与虚线预览
+- 优化小屏布局与默认交互
 
 ## 🙏 致谢
 

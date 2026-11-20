@@ -1,7 +1,7 @@
 #pragma once
 
 // ===== 应用信息 =====
-#define WCF_APP_VERSION L"v1.1.0"
+#define WCF_APP_VERSION L"v1.2.0"
 
 // ===== 窗口类名 =====
 #define WCF_MAIN_WINDOW_CLASS     L"WinClearFocusClass"

@@ -6,3 +6,32 @@ IDI_WINCLEARFOCUS ICON "WinClearFocus.ico"
 // 注意：MinGW 不支持 #pragma comment(linker, "/manifestdependency:...")（那是 MSVC 的链接器指令），
 // 所以这里用标准做法把清单作为 RT_MANIFEST 资源编进 exe，两个工具链都通用。
 1 24 "WinClearFocus.manifest"
+
+// 文件属性里显示的版本信息。
+// 修改版本号时，请同步更新 src/app/Constants.h 中的 WCF_APP_VERSION。
+1 VERSIONINFO
+ FILEVERSION 1,2,0,0
+ PRODUCTVERSION 1,2,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "FileDescription", "WinClearFocus"
+            VALUE "FileVersion", "1.2.0.0"
+            VALUE "InternalName", "WinClearFocus"
+            VALUE "OriginalFilename", "WinClearFocus.exe"
+            VALUE "ProductName", "WinClearFocus"
+            VALUE "ProductVersion", "1.2.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
