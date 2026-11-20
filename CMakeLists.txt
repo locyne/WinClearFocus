@@ -60,3 +60,20 @@ target_link_options(WinClearFocus PRIVATE
 
 # 链接 Windows 系统库
 target_link_libraries(WinClearFocus PRIVATE user32 shell32 comctl32 gdiplus dwmapi)
+
+# ===== 单元测试（纯逻辑，不依赖 GUI） =====
+include(CTest)
+
+if (BUILD_TESTING)
+    add_executable(WinClearFocusTests
+            tests/test_main.cpp
+            src/core/Settings.cpp
+            src/util/HotkeyText.cpp
+            src/util/Win32Utils.cpp
+    )
+    target_include_directories(WinClearFocusTests PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(WinClearFocusTests PRIVATE user32)
+    add_test(NAME WinClearFocusTests COMMAND WinClearFocusTests)
+endif()

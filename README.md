@@ -130,6 +130,12 @@ cmake -S . -B build -G Ninja \
 cmake --build build
 ```
 
+构建完成后可以运行纯逻辑单元测试：
+
+```bash
+ctest --test-dir build --output-on-failure
+```
+
 在 CLion 中更简单：`Settings → Build, Execution, Deployment → Toolchains` 新增一个 MinGW 工具链，Toolset 选择 `C:\msys64\ucrt64`；再到 `CMake` 设置里把当前 Profile 的 Toolchain 换成它，Reload 即可。
 
 ### 静态编译说明
@@ -192,6 +198,8 @@ cmake --build build
 
 ```
 WinClearFocus/
+├── .github/
+│   └── workflows/build.yml      # GitHub Actions 自动构建与测试
 ├── CMakeLists.txt
 ├── README.md
 ├── docs/
@@ -203,7 +211,7 @@ WinClearFocus/
 │   ├── WinClearFocus.rc         # 图标与 manifest 资源
 │   ├── WinClearFocus.manifest   # comctl32 v6 视觉样式
 │   └── WinClearFocus.ico
-└── src/
+├── src/
     ├── main.cpp                 # WinMain、单实例、静默启动、消息循环
     ├── app/
     │   ├── AppContext.h/.cpp    # 顶层窗口句柄与归属判断
@@ -225,6 +233,8 @@ WinClearFocus/
     └── util/
         ├── HotkeyText.h/.cpp    # 修饰键/按键名称格式化
         └── Win32Utils.h/.cpp    # 钳制、命中测试等小工具
+└── tests/
+    └── test_main.cpp            # 纯逻辑单元测试（钳制/命中/热键文本/默认设置）
 ```
 
 > 代码按 **app（应用生命周期）/ core（业务逻辑）/ ui（Win32 界面）/ util（无状态工具）** 分层，依赖方向自上而下，`core` 不反向依赖 `ui`。
