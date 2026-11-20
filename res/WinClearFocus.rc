@@ -1,0 +1,64 @@
+#pragma code_page(65001)
+#include "resource.h"
+
+// windres 不会自动包含 windows.h，这里补充对话框模板用到的样式常量。
+#define DS_SETFONT      0x00000040L
+#define DS_MODALFRAME   0x00000080L
+#define DS_CENTER       0x00000800L
+#define WS_POPUP        0x80000000L
+#define WS_CAPTION      0x00C00000L
+#define WS_SYSMENU      0x00080000L
+#define SS_ICON         0x00000003L
+#define SS_CENTERIMAGE  0x00000200L
+
+IDI_WINCLEARFOCUS ICON "WinClearFocus.ico"
+
+// comctl32 v6 清单：让复选框、输入框、滑动条等原生控件使用 Win11 视觉样式。
+// 注意：MinGW 不支持 #pragma comment(linker, "/manifestdependency:...")（那是 MSVC 的链接器指令），
+// 所以这里用标准做法把清单作为 RT_MANIFEST 资源编进 exe，两个工具链都通用。
+1 24 "WinClearFocus.manifest"
+
+// 文件属性里显示的版本信息。
+// 修改版本号时，请同步更新 src/app/Constants.h 中的 WCF_APP_VERSION。
+1 VERSIONINFO
+ FILEVERSION 1,2,0,0
+ PRODUCTVERSION 1,2,0,0
+ FILEFLAGSMASK 0x3fL
+ FILEFLAGS 0x0L
+ FILEOS 0x40004L
+ FILETYPE 0x1L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "080404b0"
+        BEGIN
+            VALUE "FileDescription", "WinClearFocus 窗口控制与聚焦"
+            VALUE "FileVersion", "1.2.0.0"
+            VALUE "InternalName", "WinClearFocus"
+            VALUE "OriginalFilename", "WinClearFocus.exe"
+            VALUE "ProductName", "WinClearFocus"
+            VALUE "ProductVersion", "1.2.0"
+            VALUE "Comments", "窗口控制与聚焦"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x804, 1200
+    END
+END
+
+// 启动提示：原生对话框，标题栏由 WM_SETICON 设置程序图标。
+// 正文由 StartupDialog.cpp 在 WM_INITDIALOG 中填充。
+IDD_STARTUP_DIALOG DIALOGEX 0, 0, 185, 90
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "WinClearFocus"
+FONT 9, "Microsoft YaHei UI", 400, 0, 1
+BEGIN
+    CONTROL         "", IDC_STARTUP_ICON, "STATIC", SS_ICON | SS_CENTERIMAGE, 12, 10, 28, 28
+    LTEXT           "", IDC_STARTUP_LINE1, 48, 10, 125, 14
+    LTEXT           "", IDC_STARTUP_LINE2, 48, 23, 125, 14
+    LTEXT           "", IDC_STARTUP_LINE3, 48, 36, 125, 14
+    LTEXT           "", IDC_STARTUP_LINE4, 48, 49, 125, 14
+    DEFPUSHBUTTON   "确定", 1, 67, 68, 50, 16
+END

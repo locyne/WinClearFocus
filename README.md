@@ -1,19 +1,21 @@
 <div align="center">
-<!-- 项目图标，默认调用仓库内app.ico，后续可替换GUI截图png -->
-<img src="https://github.com/locyne/WinClearFocus/blob/dev/WinClearFocus/WinClearFocus.ico" width="128"/>
+<!-- 项目图标，默认调用仓库内 res/WinClearFocus.ico -->
+<img src="res/WinClearFocus.ico" width="128"/>
 </div>
 <h1 align="center">WinClearFocus</h1>
+<p align="center"><b>窗口控制与聚焦</b></p>
 
-<p align="center">一个轻量级的 Windows 窗口辅助工具：调透明度、居中、置底、抖动——全部一个热键搞定。</p>
+<p align="center">一个轻量级的 Windows 窗口辅助工具：调透明度、居中、置底、抖动、调整尺寸——全部一个热键搞定。</p>
 
 <p align="center">
   <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-0078D4?logo=windows&logoColor=white">
   <img alt="Language" src="https://img.shields.io/badge/Language-C%2B%2B%20%2F%20Win32-00599C">
   <img alt="Build" src="https://img.shields.io/badge/Build-CMake%20%2B%20MinGW-064F8C">
+  <img alt="Version" src="https://img.shields.io/badge/Version-v1.2.0-blue">
   <img alt="Size" src="https://img.shields.io/badge/Binary-%E7%BA%A6%201%20MB-brightgreen">
 </p>
 
-WinClearFocus 基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2Clear) 二次开发，使用 **C++ + 纯 Win32 API** 实现，不使用任何第三方 UI 框架。单文件绿色运行、托盘常驻，界面由 GDI+ 自绘并启用 Windows 11 视觉样式。
+WinClearFocus（窗口控制与聚焦）基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2Clear) 二次开发，使用 **C++ + 纯 Win32 API** 实现，不使用任何第三方 UI 框架。单文件绿色运行、托盘常驻，界面由 GDI+ 自绘并启用 Windows 11 视觉样式。
 
 ## 📸 界面预览
 
@@ -25,11 +27,17 @@ WinClearFocus 基于 [iwill123/Window2Clear](https://github.com/iwill123/Window2
 
 <p align="center"><sub>设置界面 · 比例缩放 / 固定尺寸</sub></p>
 
+<p align="center">
+  <img src="docs/startup.png" width="320" alt="启动提示">
+</p>
+
+<p align="center"><sub>启动提示 · 程序图标 + 默认居中快捷键</sub></p>
+
 ## ✨ 核心特性
 
 - **窗口居中** — 按目标窗口所在显示器的**工作区**居中，自动避开任务栏；多显示器下不会"飞回主屏"；最大化窗口自动跳过。
 - **任意窗口透明度** — 以 10% 为步长调整当前前台窗口，最低可到 **1%**（近乎全透明）。
-- **一键重置透明度** — 调"没了"也不用慌，一个热键立刻恢复不透明。
+- **一键重置透明度** — 调"没了"也不用慌，一个热键立刻恢复不透明（设置中可独立启用）。
 - **窗口抖动** — 让当前窗口"抖一抖"，提醒走神的自己。
 - **窗口置底** — 把当前窗口压到所有窗口最底层（摸鱼神器）。
 - **快捷调整窗口大小** — 一个热键把当前窗口缩放成屏幕的百分比或指定宽高，自动居中；拖动设置里的滑块时有**虚线预览框**实时框出目标区域。
@@ -46,6 +54,10 @@ WinClearFocus.exe -silent
 ```
 
 也可以通过 `config.ini` 的 `ShowStartupMessage=0` 永久关闭启动提示（优先级：命令行 > 配置文件）。
+
+### 托盘图标自动恢复
+
+Windows 资源管理器（explorer.exe）重启后会广播 `TaskbarCreated` 消息，程序会自动重新添加托盘图标，无需重启 WinClearFocus。
 
 ### 智能开机自启
 
@@ -70,9 +82,10 @@ WinClearFocus.exe -silent
 - **比例缩放**（默认 70%）—— 按窗口所在显示器的**工作区**等比缩放，可勾选"缩放时忽略任务栏"；
 - **固定尺寸**（默认 1280 × 720）—— 输入 100–8000 px 的宽高；若超出当前显示器，会**等比缩小直到放得下**；
 - 两种模式都默认**调整后居中**（取消勾选则保持原左上角位置不变）；
+- 调整后的**居中位置**统一遵循“居中时忽略任务栏”开关（与 `Alt+Shift+C` 一致）；“缩放时忽略任务栏”只决定比例缩放时的尺寸基准；
 - 最大化 / 全屏窗口会被自动跳过。
 
-在设置界面拖动滑块或修改宽高时，会在对应显示器上弹出**虚线预览框**（置顶、鼠标穿透），停止操作 0.5 秒后自动消失。
+在设置界面拖动滑块、修改宽高或切换“居中时忽略任务栏”时，会在对应显示器上弹出**虚线预览框**（置顶、鼠标穿透），停止操作 0.5 秒后自动消失。
 
 > **为什么用快捷键改过的尺寸，程序重启后不保留？**
 > 窗口尺寸通常由目标程序自己"记住"：它收到鼠标拖拽 / 最大化产生的 `WM_MOVE` / `WM_SIZE` 时，会把当前尺寸写回自己的注册表或配置文件。我们通过 `SetWindowPos` 从外部修改属于"临时改动"，很多程序不会把它当成需要持久化的状态。这属于目标程序自身的机制，本工具无法干预其他程序的配置。
@@ -90,6 +103,10 @@ WinClearFocus.exe -silent
 | 窗口置底 | `Alt + Shift + Z` | ❌ |
 
 > 热键均可自定义：设置界面点击对应"设置"按钮后直接按下新的组合键即可。**开箱即用只启用"窗口居中"**，其余功能按需在设置里勾选"启用"（保存后生效），避免误触。
+>
+> 透明度区域有两个独立开关：**启用调整**（增加/减少透明度）与**启用重置**。“重置透明度”默认关闭，但可以在调整功能关闭时单独开启，作为误调透明度后的安全网。
+>
+> 设置窗口打开期间热键仍然可用，方便边调边试；只有点击“设置”录制新组合键时会临时注销，录制完成、取消或 10 秒超时后自动恢复。
 
 ## 🖱️ 使用方法
 
@@ -119,6 +136,12 @@ cmake -S . -B build -G Ninja \
       -DCMAKE_CXX_COMPILER=C:/msys64/ucrt64/bin/g++.exe \
       -DCMAKE_RC_COMPILER=C:/msys64/ucrt64/bin/windres.exe
 cmake --build build
+```
+
+构建完成后可以运行纯逻辑单元测试：
+
+```bash
+ctest --test-dir build --output-on-failure
 ```
 
 在 CLion 中更简单：`Settings → Build, Execution, Deployment → Toolchains` 新增一个 MinGW 工具链，Toolset 选择 `C:\msys64\ucrt64`；再到 `CMake` 设置里把当前 Profile 的 Toolchain 换成它，Reload 即可。
@@ -183,18 +206,74 @@ cmake --build build
 
 ```
 WinClearFocus/
+├── .github/
+│   └── workflows/build.yml      # GitHub Actions 自动构建与测试
 ├── CMakeLists.txt
 ├── README.md
 ├── docs/
-│   └── screenshot.png
-└── WinClearFocus/
-    ├── WinClearFocus.cpp        # 全部逻辑（托盘、热键、设置界面、自启）
-    ├── WinClearFocus.rc         # 图标与 manifest 资源
-    ├── WinClearFocus.manifest   # comctl32 v6 视觉样式
-    ├── resource.h
-    ├── WinClearFocus.ico
-    └── config.ini               # 默认配置模板
+│   ├── config.ini.sample        # 默认配置模板
+│   ├── settings-percent.png     # 设置界面截图 · 比例缩放
+│   ├── settings-fixed.png       # 设置界面截图 · 固定尺寸
+│   └── startup.png              # 启动提示截图
+├── res/
+│   ├── resource.h
+│   ├── WinClearFocus.rc         # 图标与 manifest 资源
+│   ├── WinClearFocus.manifest   # comctl32 v6 视觉样式
+│   └── WinClearFocus.ico
+├── src/
+    ├── main.cpp                 # WinMain、单实例、静默启动、消息循环
+    ├── app/
+    │   ├── AppContext.h/.cpp    # 顶层窗口句柄与归属判断
+    │   ├── Application.h/.cpp   # 权限判断、UAC 提权重启
+    │   └── Constants.h          # 版本号、窗口类名、控件/热键 ID
+    ├── core/
+    │   ├── Settings.h/.cpp      # AppSettings / HotkeyBinding 设置模型
+    │   ├── ConfigStore.h/.cpp   # config.ini 读写与默认值
+    │   ├── HotkeyManager.h/.cpp # 全局热键注册/注销
+    │   ├── WindowActions.h/.cpp # 透明度、居中、抖动、置底、尺寸调整
+    │   └── AutoStart.h/.cpp     # 注册表启动项与计划任务
+    ├── ui/
+    │   ├── MainWindow.h/.cpp       # 隐藏主窗口、热键分发、托盘命令
+    │   ├── TrayIcon.h/.cpp         # 托盘图标与右键菜单
+    │   ├── SettingsWindow.h/.cpp   # 设置窗口消息与交互
+    │   ├── SettingsControls.h/.cpp # 子控件创建、布局与字体
+    │   ├── SettingsRenderer.h/.cpp # GDI+ 自绘与按钮布局
+    │   └── PreviewWindow.h/.cpp    # 虚线尺寸预览框
+    └── util/
+        ├── HotkeyText.h/.cpp    # 修饰键/按键名称格式化
+        └── Win32Utils.h/.cpp    # 钳制、命中测试等小工具
+└── tests/
+    └── test_main.cpp            # 纯逻辑单元测试（钳制/命中/热键文本/默认设置）
 ```
+
+> 代码按 **app（应用生命周期）/ core（业务逻辑）/ ui（Win32 界面）/ util（无状态工具）** 分层，依赖方向自上而下，`core` 不反向依赖 `ui`。
+
+## 🆕 更新日志
+
+### v1.2.0
+
+**新增 / 改进**
+
+- 新增中文显示名 **“窗口控制与聚焦”**
+- 启动提示改为原生对话框：标题栏显示程序图标 + 英文名，正文提醒默认居中快捷键，并改用系统信息图标、收紧尺寸
+- 设置窗口标题栏改为小图标 + 常规字号，更接近系统原生标题栏
+- 完成源码模块化重构：按 `app / core / ui / util` 分层，单文件拆分为独立模块
+- 新增“启用重置”独立开关：即使关闭透明度调整，也能单独启用重置热键
+- 尺寸调整预览与居中位置统一遵循“居中时忽略任务栏”，切换后立即刷新
+- 设置窗口打开期间全局热键仍然可用；录制新热键时临时注销，完成/取消/超时后自动恢复
+- explorer.exe 重启后自动恢复托盘图标
+- 新增纯逻辑单元测试（CTest）与 GitHub Actions 自动构建
+
+**修复**
+
+- 修复“重置透明度”因缺少 UI 开关而始终未注册热键的问题
+- 修复尺寸预览不随“居中时忽略任务栏”变化、且与实际调整位置不一致的问题
+- 修复录制热键时切换到另一个“设置”按钮后，上一个按钮卡在“取消”状态的问题
+
+### v1.1.0
+
+- 新增窗口大小调整（比例缩放 / 固定尺寸）与虚线预览
+- 优化小屏布局与默认交互
 
 ## 🙏 致谢
 
